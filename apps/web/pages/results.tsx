@@ -12,6 +12,7 @@ export default function Results() {
   const [recommendedTracks, setRecommendedTracks] = useState<any[]>([]);
   const [selectedCourses, setSelectedCourses] = useState<string[]>([]);
   const [aiFeedback, setAiFeedback] = useState<string>('');
+  const [aiCareerPath, setAiCareerPath] = useState<string>('');
   const [nextSteps, setNextSteps] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [tracksLoading, setTracksLoading] = useState(true);
@@ -53,117 +54,111 @@ export default function Results() {
 
   useEffect(() => {
     if (Object.keys(scoreVector).length > 0) {
-      // Calculate strengths and weaknesses first
-      const strengths = Object.entries(scoreVector)
-        .filter(([_, score]) => score >= 70)
-        .map(([tag]) => tag);
+      setAiLoading(true);
       
-      const weaknesses = Object.entries(scoreVector)
-        .filter(([_, score]) => score < 50)
-        .map(([tag]) => tag);
-
-      const aiDataStr = localStorage.getItem('latestAIResponse');
-      if (aiDataStr) {
+      // Get user info for AI feedback
+      const userStr = localStorage.getItem('user');
+      let user = null;
+      if (userStr) {
         try {
-          const aiData = JSON.parse(aiDataStr);
-          setAiFeedback(aiData.feedback || '');
-          if (aiData.nextSteps) {
-            setNextSteps(aiData.nextSteps.split('\n').filter((s: string) => s.trim() !== ''));
-          }
-          if (aiData.recommendedTracks && aiData.recommendedTracks.length > 0) {
-            setRecommendedTracks(aiData.recommendedTracks);
-          }
-          setAiLoading(false);
+          user = JSON.parse(userStr);
         } catch (err) {
-          console.error('Error parsing cached AI response:', err);
-          localStorage.removeItem('latestAIResponse');
-          setAiLoading(true);
+          console.error('Error parsing user data:', err);
         }
-      } else {
-        setAiLoading(true);
-        // Get user info for AI feedback
-        const userStr = localStorage.getItem('user');
-        let user = null;
-        if (userStr) {
-          try {
-            user = JSON.parse(userStr);
-          } catch (err) {
-            console.error('Error parsing user data:', err);
-          }
-        }
-
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/json'
-        };
-        const token = localStorage.getItem('token');
-        if (token) {
-          headers['Authorization'] = `Bearer ${token}`;
-        }
-
-        fetch('http://localhost:4000/results/ai-feedback', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ scoreVector, user })
-        })
-          .then(res => {
-            if (!res.ok) {
-              throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-            }
-            return res.json();
-          })
-          .then(data => {
-            setAiFeedback(data.feedback || '');
-            if (data.nextSteps) {
-              setNextSteps(data.nextSteps.split('\n').filter((s: string) => s.trim() !== ''));
-            }
-            if (data.recommendedTracks && data.recommendedTracks.length > 0) {
-              setRecommendedTracks(data.recommendedTracks);
-            }
-            // Cache the AI response
-            localStorage.setItem('latestAIResponse', JSON.stringify(data));
-            setAiLoading(false);
-          })
-          .catch(err => {
-            console.error('AI feedback fetch error:', err);
-            
-            // Generate fallback AI-like feedback based on scores
-            const avgScore = Object.values(scoreVector).reduce((a, b) => a + b, 0) / Object.keys(scoreVector).length;
-            const topSkills = Object.entries(scoreVector)
-              .sort(([, a], [, b]) => b - a)
-              .slice(0, 2)
-              .map(([skill]) => skill.replace(/_/g, ' '));
-            
-            const improvementAreas = Object.entries(scoreVector)
-              .filter(([, score]) => score < 50)
-              .map(([skill]) => skill.replace(/_/g, ' '));
-
-            let feedback = '';
-            if (avgScore >= 70) {
-              feedback = `Excellent performance! You've demonstrated strong capabilities across multiple areas, particularly in ${topSkills.join(' and ')}. Your assessment results show you're well-prepared for advanced IT career paths. Consider specializing in areas that match your top skills to maximize your career potential.`;
-            } else if (avgScore >= 50) {
-              feedback = `Good foundation! You show promise in ${topSkills.join(' and ')}, which are valuable skills in the IT industry. ${improvementAreas.length > 0 ? `Focus on strengthening your ${improvementAreas.join(' and ')} to become more well-rounded.` : 'Continue building on your strengths.'} With focused learning, you can advance to more specialized roles.`;
-            } else {
-              feedback = `You're starting your IT journey! Everyone begins somewhere, and your interest in technology is the first step. Focus on building fundamentals in ${improvementAreas.length > 0 ? improvementAreas.slice(0, 2).join(' and ') : 'core IT concepts'}. The recommended tracks below are specifically chosen to help you build a strong foundation.`;
-            }
-
-            setAiFeedback(feedback);
-            
-            // Generate smart next steps
-            const smartSteps = [];
-            if (strengths.length > 0) {
-              smartSteps.push(`Leverage your strengths in ${strengths[0].replace(/_/g, ' ')} by enrolling in advanced tracks`);
-            }
-            if (weaknesses.length > 0) {
-              smartSteps.push(`Prioritize learning ${weaknesses[0].replace(/_/g, ' ')} through beginner-friendly modules`);
-            }
-            smartSteps.push('Complete at least one recommended track within the next 30 days');
-            smartSteps.push('Join study groups in the community to learn from peers');
-            smartSteps.push('Schedule a one-on-one session with an IT Professional mentor');
-            
-            setNextSteps(smartSteps);
-            setAiLoading(false);
-          });
       }
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json'
+      };
+      const token = localStorage.getItem('token');
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
+      fetch('http://localhost:4000/results/ai-feedback', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ scoreVector, user })
+      })
+        .then(res => {
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+          }
+          return res.json();
+        })
+        .then(data => {
+          console.log('AI feedback received:', data.cached ? 'from cache' : 'fresh from API');
+          setAiFeedback(data.feedback || '');
+          setAiCareerPath(data.careerPath || '');
+          
+          if (data.nextSteps) {
+            const steps = typeof data.nextSteps === 'string' 
+              ? data.nextSteps.split('\n').filter((s: string) => s.trim() !== '')
+              : data.nextSteps;
+            setNextSteps(steps);
+          }
+          
+          if (data.recommendedTracks && data.recommendedTracks.length > 0) {
+            setRecommendedTracks(data.recommendedTracks);
+          }
+          
+          setAiLoading(false);
+        })
+        .catch(err => {
+          console.error('AI feedback fetch error:', err);
+          
+          // Calculate strengths and weaknesses for fallback
+          const strengths = Object.entries(scoreVector)
+            .filter(([_, score]) => score >= 70)
+            .map(([tag]) => tag);
+          
+          const weaknesses = Object.entries(scoreVector)
+            .filter(([_, score]) => score < 50)
+            .map(([tag]) => tag);
+          
+          // Generate fallback feedback based on scores
+          const avgScore = Object.values(scoreVector).reduce((a, b) => a + b, 0) / Object.keys(scoreVector).length;
+          const topSkills = Object.entries(scoreVector)
+            .sort(([, a], [, b]) => b - a)
+            .slice(0, 2)
+            .map(([skill]) => skill.replace(/_/g, ' '));
+          
+          const improvementAreas = Object.entries(scoreVector)
+            .filter(([, score]) => score < 50)
+            .map(([skill]) => skill.replace(/_/g, ' '));
+
+          let feedback = '';
+          let careerPath = '';
+          
+          if (avgScore >= 70) {
+            feedback = `Excellent performance! You've demonstrated strong capabilities across multiple areas, particularly in ${topSkills.join(' and ')}. Your assessment results show you're well-prepared for advanced IT career paths.`;
+            careerPath = `Recommended career: Senior ${topSkills[0]} Specialist`;
+          } else if (avgScore >= 50) {
+            feedback = `Good foundation! You show promise in ${topSkills.join(' and ')}, which are valuable skills in the IT industry. ${improvementAreas.length > 0 ? `Focus on strengthening ${improvementAreas.join(' and ')}.` : 'Continue building on your strengths.'}`;
+            careerPath = `Recommended career: ${topSkills[0]} Developer`;
+          } else {
+            feedback = `You're starting your IT journey! Focus on building fundamentals in ${improvementAreas.length > 0 ? improvementAreas.slice(0, 2).join(' and ') : 'core IT concepts'}. The recommended tracks below will help you build a strong foundation.`;
+            careerPath = `Recommended career: Start with IT Foundation, then specialize`;
+          }
+
+          setAiFeedback(feedback);
+          setAiCareerPath(careerPath);
+          
+          // Generate smart next steps
+          const smartSteps = [];
+          if (strengths.length > 0) {
+            smartSteps.push(`1. Leverage your strength in ${strengths[0].replace(/_/g, ' ')} by enrolling in advanced tracks`);
+          }
+          if (weaknesses.length > 0) {
+            smartSteps.push(`${smartSteps.length + 1}. Prioritize learning ${weaknesses[0].replace(/_/g, ' ')} through beginner-friendly modules`);
+          }
+          smartSteps.push(`${smartSteps.length + 1}. Complete at least one recommended track within 30 days`);
+          smartSteps.push(`${smartSteps.length + 1}. Join study groups in the community`);
+          smartSteps.push(`${smartSteps.length + 1}. Schedule a session with an IT Professional mentor`);
+          
+          setNextSteps(smartSteps);
+          setAiLoading(false);
+        });
     }
   }, [scoreVector]);
 
@@ -460,28 +455,55 @@ export default function Results() {
                 </div>
                 <div className="flex-1">
                   <h2 className="text-2xl font-bold text-gray-900">AI Career Insights</h2>
-                  <p className="text-sm text-gray-500">Personalized analysis based on your assessment</p>
+                  <p className="text-sm text-gray-500">Powered by Hugging Face AI - Personalized career guidance</p>
                 </div>
               </div>
-              <div className="bg-gradient-to-r from-pink-50 to-rose-50 border-2 border-pink-200 rounded-xl p-6">
+              <div className="space-y-4">
                 {aiLoading ? (
-                  <div className="flex flex-col items-center gap-3 py-4">
-                    <div className="animate-spin w-8 h-8 border-3 border-pink-600 border-t-transparent rounded-full"></div>
-                    <span className="text-pink-700 font-medium">Analyzing your profile with AI...</span>
-                    <span className="text-pink-600 text-sm">This may take a moment</span>
-                  </div>
-                ) : aiFeedback ? (
-                  <div className="space-y-4">
-                    <div className="flex items-start gap-3">
-                      <Sparkles className="w-5 h-5 text-pink-600 flex-shrink-0 mt-1" />
-                      <p className="text-pink-900 leading-relaxed">{aiFeedback}</p>
+                  <div className="bg-gradient-to-r from-pink-50 to-rose-50 border-2 border-pink-200 rounded-xl p-6">
+                    <div className="flex flex-col items-center gap-3 py-4">
+                      <div className="animate-spin w-8 h-8 border-3 border-pink-600 border-t-transparent rounded-full"></div>
+                      <span className="text-pink-700 font-medium">Analyzing your profile with AI...</span>
+                      <span className="text-pink-600 text-sm">Connecting to Hugging Face API</span>
                     </div>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-3 text-pink-700">
-                    <AlertCircle className="w-5 h-5" />
-                    <span>Career insights will appear here after analysis.</span>
-                  </div>
+                  <>
+                    {/* Career Path Recommendation */}
+                    {aiCareerPath && (
+                      <div className="bg-gradient-to-r from-purple-50 to-indigo-50 border-2 border-purple-200 rounded-xl p-5">
+                        <div className="flex items-start gap-3">
+                          <Target className="w-6 h-6 text-purple-600 flex-shrink-0 mt-1" />
+                          <div>
+                            <h3 className="text-purple-900 font-bold text-lg mb-2">🎯 Your Career Path</h3>
+                            <p className="text-purple-800 font-medium">{aiCareerPath}</p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* AI Feedback */}
+                    {aiFeedback && (
+                      <div className="bg-gradient-to-r from-pink-50 to-rose-50 border-2 border-pink-200 rounded-xl p-5">
+                        <div className="flex items-start gap-3">
+                          <Sparkles className="w-6 h-6 text-pink-600 flex-shrink-0 mt-1" />
+                          <div>
+                            <h3 className="text-pink-900 font-bold text-lg mb-2">💡 Career Insights</h3>
+                            <p className="text-pink-900 leading-relaxed">{aiFeedback}</p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {!aiFeedback && !aiCareerPath && (
+                      <div className="bg-gradient-to-r from-gray-50 to-gray-100 border-2 border-gray-200 rounded-xl p-6">
+                        <div className="flex items-center gap-3 text-gray-600">
+                          <AlertCircle className="w-5 h-5" />
+                          <span>AI insights will appear here after analysis. Please ensure your internet connection is active.</span>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -491,7 +513,6 @@ export default function Results() {
               <button
                 onClick={() => {
                   localStorage.removeItem('latestAssessment');
-                  localStorage.removeItem('latestAIResponse');
                   router.push('/assessment');
                 }}
                 className="group bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white px-8 py-4 rounded-xl font-semibold text-lg flex items-center justify-center gap-2 transition-all duration-300 shadow-lg hover:shadow-xl transform hover:scale-105"

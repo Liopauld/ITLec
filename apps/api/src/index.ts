@@ -20,6 +20,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Recreate Prisma Client to refresh TypeScript types
 const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET || 'changeme';
 
@@ -696,8 +697,7 @@ app.get('/blogs', async (req, res) => {
 });
 
 
-// AI-powered feedback endpoint using DeepAI
-// ...existing code...
+// AI-powered feedback endpoint using Hugging Face
 app.post('/results/ai-feedback', async (req, res) => {
   const { scoreVector, user } = req.body;
   if (!scoreVector) {
@@ -718,142 +718,185 @@ app.post('/results/ai-feedback', async (req, res) => {
     }
   }
 
-  // Prepare input for zero-shot classification
-  const candidateLabels = [
-    'Network Engineer',
-    'Cloud Architect',
-    'Cybersecurity Analyst',
-    'Software Developer',
-    'IT Support',
-    'Database Administrator',
-    'DevOps Engineer',
-    'AI/ML Engineer',
-    'Web Developer',
-    'Systems Analyst'
-  ];
-
-  const inputText = `Assessment scores (0-100 per skill area):\n${JSON.stringify(scoreVector, null, 2)}\nUser info: ${userInfo ? JSON.stringify(userInfo) : 'N/A'}`;
-
   try {
-      // Recommend tracks from DB based on assessment strengths
-      let recommendedTracks: Array<{ id: string; title: string; description?: string }> = [];
-    if (scoreVector && typeof scoreVector === 'object') {
-      const tracks = await prisma.track.findMany();
-      const entries = Object.entries(scoreVector);
-      if (entries.length > 0) {
-        const sorted = entries.sort((a, b) => Number(b[1]) - Number(a[1]));
-        const topSkills = sorted.slice(0, 2).map(([skill]) => skill.toLowerCase());
-        recommendedTracks = tracks.filter((track: { title: string; description?: string }) => {
-          const title = track.title.toLowerCase();
-          const desc = (track.description || '').toLowerCase();
-          return topSkills.some(skill => title.includes(skill) || desc.includes(skill));
+    // Check if user has a recent assessment with cached AI feedback
+    if (userInfo && userInfo.id) {
+      const latestAssessment = await prisma.assessment.findFirst({
+        where: { userId: userInfo.id },
+        orderBy: { createdAt: 'desc' }
+      });
+
+      // If cached AI feedback exists and assessment matches current scores, return cached
+      if (latestAssessment && latestAssessment.aiFeedback && 
+          JSON.stringify(latestAssessment.scoreVector) === JSON.stringify(scoreVector)) {
+        console.log('Returning cached AI feedback for user:', userInfo.id);
+        return res.json({
+          feedback: latestAssessment.aiFeedback,
+          careerPath: latestAssessment.aiCareerPath || '',
+          nextSteps: latestAssessment.aiNextSteps || '',
+          recommendedTracks: latestAssessment.recommendedTracks || [],
+          cached: true
         });
-        // Fallback: If no tracks matched, recommend top 3 tracks by order
-        if (recommendedTracks.length === 0) {
-          recommendedTracks = tracks.slice(0, 3);
-        }
       }
     }
 
-    // Hugging Face AI feedback (optional, can be kept for career path suggestions)
-    let feedback = 'AI feedback is currently unavailable due to connectivity issues. Please check your internet connection or try again later.';
-    let nextSteps = 'Based on your assessment results, we recommend focusing on your strengths and improving areas where you scored below 50%. Consider taking relevant courses and practicing regularly.';
-    let result = null;
-    const apiKey = process.env.HUGGINGFACE_API_KEY ?? '';
+    // Calculate assessment metrics
+    const entries = Object.entries(scoreVector);
+    const avgScore = entries.reduce((sum, [_, score]) => sum + Number(score), 0) / entries.length;
+    const sorted = entries.sort((a, b) => Number(b[1]) - Number(a[1]));
+    const topSkills = sorted.slice(0, 2).map(([skill]) => skill.replace(/_/g, ' '));
+    const weakSkills = sorted.filter(([_, score]) => Number(score) < 50).map(([skill]) => skill.replace(/_/g, ' '));
+    const strongSkills = sorted.filter(([_, score]) => Number(score) >= 70).map(([skill]) => skill.replace(/_/g, ' '));
+
+    // Recommend tracks from DB based on assessment strengths
+    const tracks = await prisma.track.findMany();
+    let recommendedTracks = tracks.filter((track: { title: string; description?: string }) => {
+      const title = track.title.toLowerCase();
+      const desc = (track.description || '').toLowerCase();
+      return topSkills.some(skill => title.includes(skill.toLowerCase()) || desc.includes(skill.toLowerCase()));
+    });
+    
+    // Fallback: If no tracks matched, recommend top 3 tracks
+    if (recommendedTracks.length === 0) {
+      recommendedTracks = tracks.slice(0, 3);
+    }
+
+    // Generate AI feedback using Hugging Face
+    let feedback = '';
+    let careerPath = '';
+    let nextSteps = '';
+    
+    const apiKey = process.env.HUGGINGFACE_API_KEY;
 
     if (apiKey) {
       try {
-        const https = require('https');
-        const agent = new https.Agent({
-          rejectUnauthorized: true,
-          secureProtocol: 'TLSv1_2_method'
-        });
+        // Build a detailed prompt for the AI
+        const scoreDetails = entries.map(([skill, score]) => `${skill.replace(/_/g, ' ')}: ${score}%`).join(', ');
+        
+        const prompt = `You are an IT career advisor. A student completed an IT assessment with the following scores: ${scoreDetails}. Their average score is ${avgScore.toFixed(1)}%. ${strongSkills.length > 0 ? `Strong areas: ${strongSkills.join(', ')}.` : ''} ${weakSkills.length > 0 ? `Areas needing improvement: ${weakSkills.join(', ')}.` : ''} 
 
-        const hfRes = await fetch('https://api-inference.huggingface.co/models/facebook/bart-large-mnli', {
+Please provide:
+1. A personalized 2-3 sentence career insight based on their performance
+2. One specific IT career path that matches their skill profile best
+3. Three actionable next steps to advance their IT career
+
+Keep the tone encouraging and professional.`;
+
+        const response = await fetch('https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1', {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${apiKey}`,
             'Content-Type': 'application/json'
           },
-          agent: agent,
-          signal: AbortSignal.timeout(15000), // 15 second timeout
           body: JSON.stringify({
-            inputs: inputText,
-            parameters: { candidate_labels: candidateLabels }
+            inputs: prompt,
+            parameters: {
+              max_new_tokens: 500,
+              temperature: 0.7,
+              top_p: 0.95,
+              return_full_text: false
+            }
           })
         });
 
-        if (hfRes.ok) {
-          result = await hfRes.json();
-          const resultTyped = result as { labels?: string[]; scores?: number[] };
-          const labels = resultTyped.labels;
-          const scores = resultTyped.scores;
+        if (response.ok) {
+          const result:any = await response.json();
+          const generatedText = Array.isArray(result) ? result[0]?.generated_text : result?.generated_text;
 
-          if (Array.isArray(labels) && Array.isArray(scores) && labels.length > 0 && scores.length > 0) {
-            // Get top 3 career paths
-            const top3 = labels.slice(0, 3).map((label: string, idx: number) => ({
-              career: label,
-              confidence: `${(scores[idx] * 100).toFixed(1)}%`
-            }));
-
-            feedback = `Based on your assessment results, here are the top 3 recommended career paths:\n\n` +
-              top3.map((item, idx) => `${idx + 1}. ${item.career} (confidence: ${item.confidence})`).join('\n');
+          if (generatedText) {
+            // Parse the AI response
+            const lines = generatedText.split('\n').filter((line: string) => line.trim());
+            
+            // Extract feedback (first few sentences)
+            feedback = lines.slice(0, 3).join(' ').trim();
+            
+            // Extract career path (look for career-related keywords)
+            const careerLine = lines.find((line: string) => 
+              line.toLowerCase().includes('career') || 
+              line.toLowerCase().includes('path') ||
+              line.toLowerCase().includes('developer') ||
+              line.toLowerCase().includes('engineer') ||
+              line.toLowerCase().includes('analyst')
+            );
+            careerPath = careerLine || `Based on your skills, consider: ${topSkills[0]} specialist roles`;
+            
+            // Extract next steps (numbered items)
+            const stepLines = lines.filter((line: string) => /^\d+\./.test(line.trim()));
+            nextSteps = stepLines.join('\n') || `1. Focus on strengthening ${weakSkills[0] || 'core IT skills'}\n2. Enroll in ${topSkills[0]}-related certification courses\n3. Build real-world projects to showcase your skills`;
           }
         } else {
-          console.warn('Hugging Face API request failed:', hfRes.status, hfRes.statusText);
+          console.warn('Hugging Face API failed:', response.status, response.statusText);
         }
-      } catch (hfError) {
-        console.error('Hugging Face API error:', hfError instanceof Error ? hfError.message : String(hfError));
-        // Continue with fallback feedback
+      } catch (error) {
+        console.error('Hugging Face API error:', error);
       }
     }
 
-    // Generate next steps based on strengths/weaknesses
-    if (scoreVector && typeof scoreVector === 'object') {
-      const entries = Object.entries(scoreVector);
-      if (entries.length > 0) {
-        const sorted = entries.sort((a, b) => Number(b[1]) - Number(a[1]));
-        const strongest = sorted[0];
-        const weakest = sorted[sorted.length - 1];
-
-        nextSteps = `- Your strongest skill is '${strongest[0]}' (${strongest[1]}%). Consider advanced learning, certifications, or real-world projects in this area.\n`;
-        nextSteps += `- Your weakest skill is '${weakest[0]}' (${weakest[1]}%). We recommend starting with beginner resources or courses to improve this skill.\n`;
-        nextSteps += `- Focus on improving '${weakest[0]}' to broaden your career options.\n`;
-        nextSteps += `- Consider exploring career tracks that align with your top skills.`;
+    // Fallback if AI didn't generate proper feedback
+    if (!feedback) {
+      if (avgScore >= 70) {
+        feedback = `Excellent performance! You've demonstrated strong capabilities across multiple IT areas, particularly in ${topSkills.join(' and ')}. Your assessment results show you're well-prepared for advanced IT career paths. Consider specializing in areas that match your top skills to maximize your career potential.`;
+        careerPath = `Recommended career path: Senior ${topSkills[0]} Specialist or ${topSkills[1]} Engineer`;
+      } else if (avgScore >= 50) {
+        feedback = `Good foundation! You show promise in ${topSkills.join(' and ')}, which are valuable skills in the IT industry. ${weakSkills.length > 0 ? `Focus on strengthening your ${weakSkills.slice(0, 2).join(' and ')} skills to become more well-rounded.` : 'Continue building on your strengths.'} With focused learning, you can advance to more specialized roles.`;
+        careerPath = `Recommended career path: ${topSkills[0]} Developer or IT Support with ${topSkills[1]} focus`;
+      } else {
+        feedback = `You're starting your IT journey! Everyone begins somewhere, and your interest in technology is the first step. Focus on building fundamentals in ${weakSkills.length > 0 ? weakSkills.slice(0, 2).join(' and ') : 'core IT concepts'}. The recommended tracks below are specifically chosen to help you build a strong foundation.`;
+        careerPath = `Recommended career path: Start with IT Foundation courses, then specialize in ${topSkills[0]}`;
       }
+
+      const stepsArray = [];
+      if (strongSkills.length > 0) {
+        stepsArray.push(`1. Leverage your strength in ${strongSkills[0]} by enrolling in advanced tracks`);
+      }
+      if (weakSkills.length > 0) {
+        stepsArray.push(`${stepsArray.length + 1}. Prioritize learning ${weakSkills[0]} through beginner-friendly modules`);
+      }
+      stepsArray.push(`${stepsArray.length + 1}. Complete at least one recommended track within the next 30 days`);
+      stepsArray.push(`${stepsArray.length + 1}. Join study groups in the community to learn from peers`);
+      stepsArray.push(`${stepsArray.length + 1}. Schedule a one-on-one session with an IT Professional mentor`);
+      nextSteps = stepsArray.join('\n');
     }
 
-    // Save recommendedTracks to latest assessment if user is present
+    // Save AI feedback to database for caching
     if (userInfo && userInfo.id) {
       try {
         const latestAssessment = await prisma.assessment.findFirst({
           where: { userId: userInfo.id },
           orderBy: { createdAt: 'desc' }
         });
+
         if (latestAssessment) {
           await prisma.assessment.update({
             where: { id: latestAssessment.id },
-            data: { recommendedTracks: recommendedTracks }
+            data: {
+              aiFeedback: feedback,
+              aiCareerPath: careerPath,
+              aiNextSteps: nextSteps,
+              recommendedTracks: recommendedTracks
+            }
           });
+          console.log('Saved AI feedback to database for user:', userInfo.id);
         }
       } catch (updateError) {
-        console.error('Error updating assessment with recommended tracks:', updateError);
-        // Continue without failing the request
+        console.error('Error saving AI feedback to database:', updateError);
       }
     }
 
     res.json({
       feedback,
+      careerPath,
       nextSteps,
       recommendedTracks,
-      result,
-      user: userInfo
+      cached: false
     });
+
   } catch (err) {
     console.error('AI feedback error:', err);
     res.status(500).json({
       error: 'Failed to generate AI feedback.',
       feedback: 'Unable to generate AI feedback at this time. Please try again later.',
+      careerPath: '',
       nextSteps: 'Please review your assessment results and consider taking relevant courses.',
       recommendedTracks: []
     });
@@ -3105,6 +3148,213 @@ app.get('/games/stats', async (req, res) => {
   } catch (err) {
     console.error('Game stats error:', err);
     res.status(500).json({ error: 'Failed to fetch game stats' });
+  }
+});
+
+// ==================== SESSION ENDPOINTS ====================
+
+// Get all sessions (mentor can see their sessions, students see theirs)
+app.get('/sessions', requireAuth, async (req, res) => {
+  try {
+    const userId = req.userId!;
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    let sessions;
+    if (user.role === 'IT Professional') {
+      // Mentors see sessions they're conducting
+      sessions = await prisma.session.findMany({
+        where: { mentorId: userId },
+        orderBy: { startTime: 'desc' }
+      });
+    } else {
+      // Students see sessions they're attending
+      sessions = await prisma.session.findMany({
+        where: { studentId: userId },
+        orderBy: { startTime: 'desc' }
+      });
+    }
+
+    // Fetch user details for each session
+    const sessionsWithDetails = await Promise.all(
+      sessions.map(async (session) => {
+        const mentor = await prisma.user.findUnique({
+          where: { id: session.mentorId },
+          select: { id: true, name: true, email: true }
+        });
+        const student = await prisma.user.findUnique({
+          where: { id: session.studentId },
+          select: { id: true, name: true, email: true }
+        });
+        return { ...session, mentor, student };
+      })
+    );
+
+    res.json({ sessions: sessionsWithDetails });
+  } catch (err) {
+    console.error('Get sessions error:', err);
+    res.status(500).json({ error: 'Failed to fetch sessions' });
+  }
+});
+
+// Get students (for IT Professionals to view and book sessions)
+app.get('/students', requireAuth, async (req, res) => {
+  try {
+    const userId = req.userId!;
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    
+    if (!user || user.role !== 'IT Professional') {
+      return res.status(403).json({ error: 'Only IT Professionals can view students' });
+    }
+
+    const students = await prisma.user.findMany({
+      where: {
+        OR: [
+          { role: 'student' },
+          { role: 'career_switcher' }
+        ]
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        bio: true,
+        xp: true,
+        createdAt: true,
+        trackProgresses: {
+          include: {
+            track: {
+              select: { title: true }
+            }
+          }
+        },
+        assessments: {
+          orderBy: { createdAt: 'desc' },
+          take: 1
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    // Count sessions for each student
+    const studentsWithSessions = await Promise.all(
+      students.map(async (student) => {
+        const sessionCount = await prisma.session.count({
+          where: {
+            studentId: student.id,
+            mentorId: userId
+          }
+        });
+        return { ...student, sessionCount };
+      })
+    );
+
+    res.json({ students: studentsWithSessions });
+  } catch (err) {
+    console.error('Get students error:', err);
+    res.status(500).json({ error: 'Failed to fetch students' });
+  }
+});
+
+// Create a new session (IT Professional books with student)
+app.post('/sessions', requireAuth, async (req, res) => {
+  try {
+    const userId = req.userId!;
+    const { studentId, title, description, startTime, endTime, meetingLink } = req.body;
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    
+    if (!user || user.role !== 'IT Professional') {
+      return res.status(403).json({ error: 'Only IT Professionals can create sessions' });
+    }
+
+    // Validate student exists
+    const student = await prisma.user.findUnique({ where: { id: studentId } });
+    if (!student || (student.role !== 'student' && student.role !== 'career_switcher')) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    const session = await prisma.session.create({
+      data: {
+        mentorId: userId,
+        studentId,
+        title,
+        description: description || '',
+        startTime: new Date(startTime),
+        endTime: new Date(endTime),
+        meetingLink: meetingLink || '',
+        status: 'scheduled'
+      }
+    });
+
+    res.status(201).json({ session });
+  } catch (err) {
+    console.error('Create session error:', err);
+    res.status(500).json({ error: 'Failed to create session' });
+  }
+});
+
+// Update session status (complete, cancel, etc.)
+app.put('/sessions/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = req.userId!;
+    const { id } = req.params;
+    const { status, notes } = req.body;
+
+    const session = await prisma.session.findUnique({ where: { id } });
+    
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    // Only mentor can update the session
+    if (session.mentorId !== userId) {
+      return res.status(403).json({ error: 'Only the mentor can update this session' });
+    }
+
+    const updated = await prisma.session.update({
+      where: { id },
+      data: {
+        status: status || session.status,
+        notes: notes !== undefined ? notes : session.notes,
+        updatedAt: new Date()
+      }
+    });
+
+    res.json({ session: updated });
+  } catch (err) {
+    console.error('Update session error:', err);
+    res.status(500).json({ error: 'Failed to update session' });
+  }
+});
+
+// Delete session
+app.delete('/sessions/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = req.userId!;
+    const { id } = req.params;
+
+    const session = await prisma.session.findUnique({ where: { id } });
+    
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    // Only mentor can delete the session
+    if (session.mentorId !== userId) {
+      return res.status(403).json({ error: 'Only the mentor can delete this session' });
+    }
+
+    await prisma.session.delete({ where: { id } });
+
+    res.json({ message: 'Session deleted successfully' });
+  } catch (err) {
+    console.error('Delete session error:', err);
+    res.status(500).json({ error: 'Failed to delete session' });
   }
 });
 

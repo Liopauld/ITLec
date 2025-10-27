@@ -79,6 +79,9 @@ model Assessment {
   scoreVector Json
   rawAnswers Json
   recommendedTracks Json?
+  aiFeedback String?  // Cached AI-generated feedback
+  aiCareerPath String? // Recommended career path from AI
+  aiNextSteps String? // AI-generated next steps
 }
 
 model Question {
@@ -262,4 +265,19 @@ model EventRegistration {
   attendedAt DateTime?
 
   @@unique([eventId, userId])
+}
+
+model Session {
+  id          String   @id @default(uuid())
+  mentorId    String   // IT Professional conducting the session
+  studentId   String   // Student attending the session
+  title       String
+  description String?
+  startTime   DateTime
+  endTime     DateTime
+  meetingLink String?  // Zoom/Meet/Teams link
+  status      String   @default("scheduled") // 'scheduled', 'completed', 'cancelled', 'no-show'
+  notes       String?  // Session notes or feedback
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
