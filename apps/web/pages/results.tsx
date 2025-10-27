@@ -116,8 +116,42 @@ export default function Results() {
           })
           .catch(err => {
             console.error('AI feedback fetch error:', err);
-            setAiFeedback('Unable to generate AI feedback at this time. Please try refreshing the page.');
-            setNextSteps(['Please review your assessment results and consider taking relevant courses.']);
+            
+            // Generate fallback AI-like feedback based on scores
+            const avgScore = Object.values(scoreVector).reduce((a, b) => a + b, 0) / Object.keys(scoreVector).length;
+            const topSkills = Object.entries(scoreVector)
+              .sort(([, a], [, b]) => b - a)
+              .slice(0, 2)
+              .map(([skill]) => skill.replace(/_/g, ' '));
+            
+            const improvementAreas = Object.entries(scoreVector)
+              .filter(([, score]) => score < 50)
+              .map(([skill]) => skill.replace(/_/g, ' '));
+
+            let feedback = '';
+            if (avgScore >= 70) {
+              feedback = `Excellent performance! You've demonstrated strong capabilities across multiple areas, particularly in ${topSkills.join(' and ')}. Your assessment results show you're well-prepared for advanced IT career paths. Consider specializing in areas that match your top skills to maximize your career potential.`;
+            } else if (avgScore >= 50) {
+              feedback = `Good foundation! You show promise in ${topSkills.join(' and ')}, which are valuable skills in the IT industry. ${improvementAreas.length > 0 ? `Focus on strengthening your ${improvementAreas.join(' and ')} to become more well-rounded.` : 'Continue building on your strengths.'} With focused learning, you can advance to more specialized roles.`;
+            } else {
+              feedback = `You're starting your IT journey! Everyone begins somewhere, and your interest in technology is the first step. Focus on building fundamentals in ${improvementAreas.length > 0 ? improvementAreas.slice(0, 2).join(' and ') : 'core IT concepts'}. The recommended tracks below are specifically chosen to help you build a strong foundation.`;
+            }
+
+            setAiFeedback(feedback);
+            
+            // Generate smart next steps
+            const smartSteps = [];
+            if (strengths.length > 0) {
+              smartSteps.push(`Leverage your strengths in ${strengths[0].replace(/_/g, ' ')} by enrolling in advanced tracks`);
+            }
+            if (weaknesses.length > 0) {
+              smartSteps.push(`Prioritize learning ${weaknesses[0].replace(/_/g, ' ')} through beginner-friendly modules`);
+            }
+            smartSteps.push('Complete at least one recommended track within the next 30 days');
+            smartSteps.push('Join study groups in the community to learn from peers');
+            smartSteps.push('Schedule a one-on-one session with an IT Professional mentor');
+            
+            setNextSteps(smartSteps);
             setAiLoading(false);
           });
       }
@@ -414,19 +448,29 @@ export default function Results() {
                 <div className="bg-gradient-to-r from-pink-500 to-rose-500 w-12 h-12 rounded-xl flex items-center justify-center">
                   <Brain className="w-6 h-6 text-white animate-pulse" />
                 </div>
-                <h2 className="text-2xl font-bold text-gray-900">AI Career Insights</h2>
+                <div className="flex-1">
+                  <h2 className="text-2xl font-bold text-gray-900">AI Career Insights</h2>
+                  <p className="text-sm text-gray-500">Personalized analysis based on your assessment</p>
+                </div>
               </div>
               <div className="bg-gradient-to-r from-pink-50 to-rose-50 border-2 border-pink-200 rounded-xl p-6">
                 {aiLoading ? (
-                  <div className="flex items-center gap-3 text-pink-700">
-                    <div className="animate-spin w-5 h-5 border-2 border-pink-600 border-t-transparent rounded-full"></div>
-                    <span>Analyzing your profile with AI...</span>
+                  <div className="flex flex-col items-center gap-3 py-4">
+                    <div className="animate-spin w-8 h-8 border-3 border-pink-600 border-t-transparent rounded-full"></div>
+                    <span className="text-pink-700 font-medium">Analyzing your profile with AI...</span>
+                    <span className="text-pink-600 text-sm">This may take a moment</span>
                   </div>
                 ) : aiFeedback ? (
-                  <p className="text-pink-900 leading-relaxed whitespace-pre-line">{aiFeedback}</p>
+                  <div className="space-y-4">
+                    <div className="flex items-start gap-3">
+                      <Sparkles className="w-5 h-5 text-pink-600 flex-shrink-0 mt-1" />
+                      <p className="text-pink-900 leading-relaxed">{aiFeedback}</p>
+                    </div>
+                  </div>
                 ) : (
                   <div className="flex items-center gap-3 text-pink-700">
-                    <span>No AI feedback available.</span>
+                    <AlertCircle className="w-5 h-5" />
+                    <span>Career insights will appear here after analysis.</span>
                   </div>
                 )}
               </div>
