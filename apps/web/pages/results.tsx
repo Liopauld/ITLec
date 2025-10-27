@@ -167,6 +167,7 @@ export default function Results() {
     }
   }, [scoreVector]);
 
+  // Calculate strengths and weaknesses for display
   const strengths = Object.entries(scoreVector)
     .filter(([_, score]) => score >= 70)
     .map(([tag]) => tag);
