@@ -1,0 +1,265 @@
+model Game {
+  id        String   @id @default(uuid())
+  name      String
+  type      String // e.g. coding, network, logic, sql-quiz, threat
+  content   Json    // game data/config
+  module    Module? @relation(fields: [moduleId], references: [id])
+  moduleId  String?
+  track     Track?  @relation(fields: [trackId], references: [id])
+  trackId   String?
+}
+model TrackProgress {
+  id         String   @id @default(uuid())
+  user       User     @relation(fields: [userId], references: [id])
+  userId     String
+  track      Track    @relation(fields: [trackId], references: [id])
+  trackId    String
+  completedModules String[] // Array of completed module IDs
+  completedGames   String[] // Array of completed game module IDs
+  achievements     Json?
+  startedAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+// Prisma schema for ITPathfinder MVP
+// Database: PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  password     String
+  role         String
+  bio          String?
+  github       String?
+  linkedin     String?
+  skillsVector Json?
+  xp           Int      @default(0)
+  reputation   Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  profiles     Profile[]
+  assessments  Assessment[]
+  submissions  Submission[]
+  badges       Badge[]
+  certificates Certificate[]
+  posts        Post[]
+  comments     Comment[]
+  mentor       Mentor?
+  trackProgresses TrackProgress[]
+  lessonProgresses  LessonProgress[]
+  createdTracks Track[]  // Tracks created by this IT Professional
+  createdEvents Event[]  // Events created by this IT Professional
+  eventRegistrations EventRegistration[]
+}
+
+model Profile {
+  id        String   @id @default(uuid())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  education String?
+  location  String?
+  profilePicture String?
+  // github and linkedin moved to User model
+}
+
+model Assessment {
+  id         String   @id @default(uuid())
+  user       User     @relation(fields: [userId], references: [id])
+  userId     String
+  createdAt  DateTime @default(now())
+  scoreVector Json
+  rawAnswers Json
+  recommendedTracks Json?
+}
+
+model Question {
+  id       String   @id @default(uuid())
+  stem     String
+  type     String
+  tags     String[]
+  options  Json
+  correct  Json?
+  weight   Float
+  quiz     Quiz?    @relation(fields: [quizId], references: [id])
+  quizId   String?
+}
+
+model Track {
+  id          String   @id @default(uuid())
+  title       String
+  description String
+  difficulty  String
+  category    String?  // e.g., programming, web, security, data, etc.
+  prerequisites Json?  // Array of prerequisite track IDs
+  creatorId   String?  // ID of the IT Professional who created this track
+  creator     User?    @relation(fields: [creatorId], references: [id])
+  modules     Module[]
+  games       Game[]
+  certificates Certificate[]
+  trackProgresses TrackProgress[]
+}
+
+model Module {
+  id        String   @id @default(uuid())
+  track     Track    @relation(fields: [trackId], references: [id])
+  trackId   String
+  type      String
+  content   Json
+  games     Game[]
+  order     Int
+  lessons   Lesson[]
+  quizzes   Quiz[]
+}
+
+model Lesson {
+  id            String   @id @default(uuid())
+  module        Module   @relation(fields: [moduleId], references: [id])
+  moduleId      String
+  title         String
+  subtitle      String?
+  body          Json
+  resources     Json?
+  order         Int      @default(0)
+  estimatedMins Int?
+  authorId      String?
+  isDraft       Boolean  @default(false)
+  version       Int      @default(1)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([moduleId, order])
+  progresses   LessonProgress[]
+}
+
+model LessonProgress {
+  id        String   @id @default(uuid())
+  lesson    Lesson   @relation(fields: [lessonId], references: [id])
+  lessonId  String
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  completed Boolean  @default(false)
+  startedAt DateTime?
+  finishedAt DateTime?
+  progress  Int?
+  notes     String?
+
+  @@unique([lessonId, userId])
+}
+
+model Quiz {
+  id        String   @id @default(uuid())
+  module    Module   @relation(fields: [moduleId], references: [id])
+  moduleId  String
+  questions Question[]
+}
+
+model Submission {
+  id         String   @id @default(uuid())
+  user       User     @relation(fields: [userId], references: [id])
+  userId     String
+  exerciseId String
+  status     String
+  score      Float
+  feedback   String?
+}
+
+model Badge {
+  id       String   @id @default(uuid())
+  name     String
+  criteria String
+  users    User[]
+}
+
+model Certificate {
+  id         String   @id @default(uuid())
+  user       User     @relation(fields: [userId], references: [id])
+  userId     String
+  track      Track    @relation(fields: [trackId], references: [id])
+  trackId    String
+  issueDate  DateTime @default(now())
+  certCode   String   @unique
+}
+
+model Post {
+  id        String   @id @default(uuid())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  content   String
+  tags      String[]
+  mediaUrl  String?  // URL to image/video
+  mediaType String?  // 'image' or 'video'
+  comments  Comment[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Comment {
+  id      String   @id @default(uuid())
+  post    Post     @relation(fields: [postId], references: [id])
+  postId  String
+  user    User     @relation(fields: [userId], references: [id])
+  userId  String
+  content String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Mentor {
+  id          String   @id @default(uuid())
+  user        User     @relation(fields: [userId], references: [id])
+  userId      String   @unique
+  rate        Float?
+  skills      String[]
+  availability Json?
+}
+
+model JobListing {
+  id            String   @id @default(uuid())
+  source        String
+  title         String
+  skillsRequired String[]
+  location      String
+  salaryRange   String
+}
+
+model Event {
+  id          String   @id @default(uuid())
+  title       String
+  description String
+  type        String   // 'workshop', 'webinar', 'networking', 'career_fair', etc.
+  startTime   DateTime
+  endTime     DateTime
+  location    String?  // Physical location or "Virtual"
+  virtualLink String?  // Zoom/Meet link for virtual events
+  capacity    Int?     // Maximum attendees
+  creatorId   String   // IT Professional who created the event
+  creator     User     @relation(fields: [creatorId], references: [id])
+  status      String   @default("draft") // 'draft', 'published', 'cancelled', 'completed'
+  tags        String[]
+  imageUrl    String?  // Event banner/cover image
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  registrations EventRegistration[]
+}
+
+model EventRegistration {
+  id        String   @id @default(uuid())
+  event     Event    @relation(fields: [eventId], references: [id])
+  eventId   String
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  status    String   @default("registered") // 'registered', 'attended', 'cancelled'
+  registeredAt DateTime @default(now())
+  attendedAt DateTime?
+
+  @@unique([eventId, userId])
+}

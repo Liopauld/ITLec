@@ -1,0 +1,32 @@
+{
+  "name": "api",
+  "version": "1.0.0",
+  "private": true,
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "ts-node src/index.ts",
+    "dev": "nodemon src/index.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.17.1",
+    "bcryptjs": "latest",
+    "cloudinary": "^1.41.3",
+    "cors": "latest",
+    "dotenv": "^16.4.5",
+    "express": "latest",
+    "jsonwebtoken": "latest",
+    "multer": "^2.0.2",
+    "multer-storage-cloudinary": "^4.0.0",
+    "vm2": "^3.9.19"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "latest",
+    "@types/express": "latest",
+    "@types/jsonwebtoken": "latest",
+    "@types/multer": "^2.0.0",
+    "@types/node": "latest",
+    "nodemon": "latest",
+    "ts-node": "latest",
+    "typescript": "latest"
+  }
+}

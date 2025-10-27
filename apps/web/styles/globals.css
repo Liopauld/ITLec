@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --primary-color: #2563eb;
+  --secondary-color: #1e40af;
+}
+
+body {
+  @apply bg-gray-50;
+}
+
+.auth-container {
+  @apply min-h-screen flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8 bg-gray-50;
+}
+
+.auth-card {
+  @apply max-w-md w-full space-y-8 bg-white p-8 rounded-lg shadow-lg;
+}
+
+.auth-header {
+  @apply text-center;
+}
+
+.auth-title {
+  @apply mt-6 text-3xl font-extrabold text-gray-900;
+}
+
+.auth-form {
+  @apply mt-8 space-y-6;
+}
+
+.form-group {
+  @apply -space-y-px rounded-md shadow-sm;
+}
+
+.input-field {
+  @apply appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm;
+}
+
+.input-field:first-child {
+  @apply rounded-t-md;
+}
+
+.input-field:last-child {
+  @apply rounded-b-md;
+}
+
+.submit-button {
+  @apply relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500;
+}
+
+.error-message {
+  @apply mt-2 text-sm text-red-600;
+}
