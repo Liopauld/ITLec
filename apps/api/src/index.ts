@@ -724,7 +724,7 @@ app.post('/results/ai-feedback', async (req, res) => {
       const latestAssessment = await prisma.assessment.findFirst({
         where: { userId: userInfo.id },
         orderBy: { createdAt: 'desc' }
-      });
+      }) as any;
 
       // If cached AI feedback exists and assessment matches current scores, return cached
       if (latestAssessment && latestAssessment.aiFeedback && 
@@ -874,7 +874,7 @@ Keep the tone encouraging and professional.`;
               aiCareerPath: careerPath,
               aiNextSteps: nextSteps,
               recommendedTracks: recommendedTracks
-            }
+            } as any
           });
           console.log('Saved AI feedback to database for user:', userInfo.id);
         }
