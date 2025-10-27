@@ -53,6 +53,15 @@ export default function Results() {
 
   useEffect(() => {
     if (Object.keys(scoreVector).length > 0) {
+      // Calculate strengths and weaknesses first
+      const strengths = Object.entries(scoreVector)
+        .filter(([_, score]) => score >= 70)
+        .map(([tag]) => tag);
+      
+      const weaknesses = Object.entries(scoreVector)
+        .filter(([_, score]) => score < 50)
+        .map(([tag]) => tag);
+
       const aiDataStr = localStorage.getItem('latestAIResponse');
       if (aiDataStr) {
         try {
