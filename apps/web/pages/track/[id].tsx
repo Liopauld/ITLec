@@ -331,6 +331,9 @@ const TrackDetails: React.FC = () => {
       case 'network': return Network;
       case 'threat': return Shield;
       case 'sql-quiz': return Database;
+      case 'logic': return Target;
+      case 'puzzle': return Zap;
+      case 'trivia': return Trophy;
       default: return BookOpen;
     }
   };
@@ -341,6 +344,9 @@ const TrackDetails: React.FC = () => {
       case 'network': return 'green';
       case 'threat': return 'red';
       case 'sql-quiz': return 'purple';
+      case 'logic': return 'indigo';
+      case 'puzzle': return 'pink';
+      case 'trivia': return 'amber';
       default: return 'gray';
     }
   };
@@ -1901,6 +1907,379 @@ const TrackDetails: React.FC = () => {
                       </div>
                     </div>
                   )}
+
+                  {/* Logic Puzzle Game */}
+                  {activeGame?.type === 'logic' && (
+                    <div className="bg-white rounded-2xl shadow-xl border-2 border-gray-100 overflow-hidden">
+                      <div className="bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 px-6 py-5">
+                        <div className="flex items-center gap-3">
+                          <div className="bg-white/20 backdrop-blur-sm rounded-lg p-2 animate-pulse">
+                            <Target className="w-7 h-7 text-white" />
+                          </div>
+                          <div>
+                            <h3 className="text-2xl font-bold text-white">{activeGame?.content?.title || activeModule.content?.title || `Logic Puzzle`}</h3>
+                            <p className="text-indigo-100 text-sm font-medium">🧩 Brain Teaser Challenge</p>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <div className="p-6">
+                        <div className="bg-gradient-to-r from-indigo-50 to-purple-50 border-l-4 border-indigo-500 rounded-lg p-5 mb-6">
+                          <div className="flex items-start gap-3">
+                            <Sparkles className="w-6 h-6 text-indigo-600 flex-shrink-0 mt-1" />
+                            <div className="flex-1">
+                              <h4 className="font-bold text-gray-900 mb-2 text-lg">Puzzle Question</h4>
+                              <p className="text-gray-700 leading-relaxed text-lg">{activeGame?.content?.question || activeGame?.content?.description || activeModule.content?.description || 'Solve this logic puzzle.'}</p>
+                            </div>
+                          </div>
+                        </div>
+                        
+                        {/* Answer Input */}
+                        <div className="mb-6">
+                          <label className="text-sm font-bold text-gray-700 mb-3 flex items-center gap-2">
+                            <Code className="w-5 h-5 text-indigo-600" />
+                            Your Answer
+                          </label>
+                          <input
+                            type="text"
+                            value={code}
+                            onChange={(e) => setCode(e.target.value)}
+                            placeholder="Enter your answer here..."
+                            className="w-full p-4 border-2 border-indigo-200 rounded-xl focus:border-indigo-500 focus:outline-none transition-all duration-300 text-lg"
+                          />
+                          <div className="mt-2 flex items-start gap-2 text-sm text-indigo-600">
+                            <Info className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                            <p>Tip: Think carefully about the pattern or logic before answering.</p>
+                          </div>
+                        </div>
+
+                        <button
+                          className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white px-6 py-4 rounded-xl font-bold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:scale-105 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed mb-4"
+                          disabled={!code.trim()}
+                          onClick={async () => {
+                            try {
+                              const res = await fetch(`${API_BASE}/games/logic`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ 
+                                  answer: code,
+                                  challengeId: activeGame?.content?.challengeId || 'pattern-completion',
+                                  moduleId: activeModule.id 
+                                })
+                              });
+                              const data = await res.json();
+                              setOutput(data.result || '✅ Answer submitted!');
+                              if (res.ok && data.passed) markGameAndModuleComplete();
+                            } catch (err) {
+                              setOutput('❌ Error submitting answer');
+                            }
+                          }}
+                        >
+                          <Send className="w-5 h-5" />
+                          Submit Answer
+                        </button>
+
+                        {output && (
+                          <div className="bg-gradient-to-br from-gray-900 to-gray-800 text-indigo-400 p-5 rounded-xl font-mono text-sm border border-indigo-900 shadow-inner">
+                            <pre className="whitespace-pre-wrap">{output}</pre>
+                          </div>
+                        )}
+                        {(token && userId && activeGame) ? (
+                          <div className="mt-4">
+                            <button
+                              className="w-full bg-green-50 text-green-700 px-4 py-2 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                              disabled={isActiveGameCompleted}
+                              onClick={async () => {
+                                try {
+                                  const headers: any = { 'Content-Type': 'application/json' };
+                                  if (token) headers['Authorization'] = `Bearer ${token}`;
+                                  if (token) {
+                                    await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}`, {
+                                      method: 'PUT', headers,
+                                      body: JSON.stringify({ completedModules: [], completedGames: [], achievements: null })
+                                    }).catch(() => {});
+                                  }
+                                  const res = await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}/game/${activeGame.id}/complete`, { method: 'POST', headers });
+                                  if (!res.ok) return;
+                                  const data = await res.json();
+                                  const merged = mergeProgress(trackProgress, data.progress);
+                                  setTrackProgress(merged);
+                                  setProgress(calcPercent(merged, track));
+                                  await saveProgress(merged);
+                                } catch (err) {}
+                              }}
+                            >Mark game complete</button>
+                          </div>
+                        ) : (
+                          activeGame ? (
+                            <div className="mt-4">
+                              <button
+                                disabled
+                                className="w-full opacity-60 cursor-not-allowed bg-gray-100 text-gray-500 px-4 py-2 rounded-lg font-semibold"
+                                title="Sign in to mark game as complete"
+                              >Mark game complete</button>
+                            </div>
+                          ) : null
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Puzzle Game */}
+                  {activeGame?.type === 'puzzle' && (
+                    <div className="bg-white rounded-2xl shadow-xl border-2 border-gray-100 overflow-hidden">
+                      <div className="bg-gradient-to-r from-pink-600 via-rose-600 to-red-600 px-6 py-5">
+                        <div className="flex items-center gap-3">
+                          <div className="bg-white/20 backdrop-blur-sm rounded-lg p-2 animate-pulse">
+                            <Zap className="w-7 h-7 text-white" />
+                          </div>
+                          <div>
+                            <h3 className="text-2xl font-bold text-white">{activeGame?.content?.title || activeModule.content?.title || `Puzzle Challenge`}</h3>
+                            <p className="text-pink-100 text-sm font-medium">🧩 Problem Solving Challenge</p>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <div className="p-6">
+                        <div className="bg-gradient-to-r from-pink-50 to-rose-50 border-l-4 border-pink-500 rounded-lg p-5 mb-6">
+                          <div className="flex items-start gap-3">
+                            <Target className="w-6 h-6 text-pink-600 flex-shrink-0 mt-1" />
+                            <div className="flex-1">
+                              <h4 className="font-bold text-gray-900 mb-2 text-lg">Puzzle Description</h4>
+                              <p className="text-gray-700 leading-relaxed">{activeGame?.content?.description || activeModule.content?.description || 'Solve this puzzle challenge.'}</p>
+                            </div>
+                          </div>
+                        </div>
+                        
+                        {/* Solution Input */}
+                        <div className="mb-6">
+                          <label className="text-sm font-bold text-gray-700 mb-3 flex items-center gap-2">
+                            <Code className="w-5 h-5 text-pink-600" />
+                            Your Solution
+                          </label>
+                          <textarea
+                            value={code}
+                            onChange={(e) => setCode(e.target.value)}
+                            placeholder="Enter your solution here... (e.g., COMPUTER for word scramble, or arrange numbers)"
+                            className="w-full h-32 p-4 border-2 border-pink-200 rounded-xl focus:border-pink-500 focus:outline-none transition-all duration-300 resize-none"
+                          />
+                          <div className="mt-2 flex items-start gap-2 text-sm text-pink-600">
+                            <Info className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                            <p>Tip: Pay attention to the puzzle type and format your answer accordingly.</p>
+                          </div>
+                        </div>
+
+                        <button
+                          className="w-full bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-700 hover:to-rose-700 text-white px-6 py-4 rounded-xl font-bold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:scale-105 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed mb-4"
+                          disabled={!code.trim()}
+                          onClick={async () => {
+                            try {
+                              const res = await fetch(`${API_BASE}/games/puzzle`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ 
+                                  solution: code,
+                                  challengeId: activeGame?.content?.challengeId || 'word-scramble',
+                                  moduleId: activeModule.id 
+                                })
+                              });
+                              const data = await res.json();
+                              setOutput(data.result || '✅ Solution submitted!');
+                              if (res.ok && data.passed) markGameAndModuleComplete();
+                            } catch (err) {
+                              setOutput('❌ Error submitting solution');
+                            }
+                          }}
+                        >
+                          <Send className="w-5 h-5" />
+                          Submit Solution
+                        </button>
+
+                        {output && (
+                          <div className="bg-gradient-to-br from-gray-900 to-gray-800 text-pink-400 p-5 rounded-xl font-mono text-sm border border-pink-900 shadow-inner">
+                            <pre className="whitespace-pre-wrap">{output}</pre>
+                          </div>
+                        )}
+                        {(token && userId && activeGame) ? (
+                          <div className="mt-4">
+                            <button
+                              className="w-full bg-green-50 text-green-700 px-4 py-2 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                              disabled={isActiveGameCompleted}
+                              onClick={async () => {
+                                try {
+                                  const headers: any = { 'Content-Type': 'application/json' };
+                                  if (token) headers['Authorization'] = `Bearer ${token}`;
+                                  if (token) {
+                                    await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}`, {
+                                      method: 'PUT', headers,
+                                      body: JSON.stringify({ completedModules: [], completedGames: [], achievements: null })
+                                    }).catch(() => {});
+                                  }
+                                  const res = await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}/game/${activeGame.id}/complete`, { method: 'POST', headers });
+                                  if (!res.ok) return;
+                                  const data = await res.json();
+                                  const merged = mergeProgress(trackProgress, data.progress);
+                                  setTrackProgress(merged);
+                                  setProgress(calcPercent(merged, track));
+                                  await saveProgress(merged);
+                                } catch (err) {}
+                              }}
+                            >Mark game complete</button>
+                          </div>
+                        ) : (
+                          activeGame ? (
+                            <div className="mt-4">
+                              <button
+                                disabled
+                                className="w-full opacity-60 cursor-not-allowed bg-gray-100 text-gray-500 px-4 py-2 rounded-lg font-semibold"
+                                title="Sign in to mark game as complete"
+                              >Mark game complete</button>
+                            </div>
+                          ) : null
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Trivia Game */}
+                  {activeGame?.type === 'trivia' && (
+                    <div className="bg-white rounded-2xl shadow-xl border-2 border-gray-100 overflow-hidden">
+                      <div className="bg-gradient-to-r from-amber-600 via-yellow-600 to-orange-600 px-6 py-5">
+                        <div className="flex items-center gap-3">
+                          <div className="bg-white/20 backdrop-blur-sm rounded-lg p-2 animate-pulse">
+                            <Trophy className="w-7 h-7 text-white" />
+                          </div>
+                          <div>
+                            <h3 className="text-2xl font-bold text-white">{activeGame?.content?.title || activeModule.content?.title || `Trivia Challenge`}</h3>
+                            <p className="text-amber-100 text-sm font-medium">🎯 Knowledge Quiz</p>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <div className="p-6">
+                        <div className="bg-gradient-to-r from-amber-50 to-yellow-50 border-l-4 border-amber-500 rounded-lg p-5 mb-6">
+                          <div className="flex items-start gap-3">
+                            <Info className="w-6 h-6 text-amber-600 flex-shrink-0 mt-1" />
+                            <div className="flex-1">
+                              <h4 className="font-bold text-gray-900 mb-2 text-lg">Quiz Instructions</h4>
+                              <p className="text-gray-700 leading-relaxed">{activeGame?.content?.description || activeModule.content?.description || 'Answer all questions correctly to complete this challenge.'}</p>
+                              <p className="text-sm text-gray-600 mt-2">📊 Pass rate: 70% or higher</p>
+                            </div>
+                          </div>
+                        </div>
+                        
+                        {/* Questions */}
+                        {activeGame?.content?.questions && Array.isArray(activeGame.content.questions) ? (
+                          <div className="space-y-6 mb-6">
+                            {activeGame.content.questions.map((q: any, idx: number) => (
+                              <div key={idx} className="bg-gray-50 rounded-xl p-5 border-2 border-gray-200">
+                                <p className="font-bold text-gray-900 mb-4 text-lg">
+                                  {idx + 1}. {q.question}
+                                </p>
+                                <div className="space-y-2">
+                                  {q.options && Array.isArray(q.options) && q.options.map((opt: string, optIdx: number) => (
+                                    <label
+                                      key={optIdx}
+                                      className="flex items-center gap-3 p-3 bg-white rounded-lg border-2 border-gray-200 hover:border-amber-400 cursor-pointer transition-all duration-300"
+                                    >
+                                      <input
+                                        type="radio"
+                                        name={`question-${idx}`}
+                                        value={optIdx}
+                                        onChange={(e) => {
+                                          // Store answer in state (reusing threatAnswers array for simplicity)
+                                          const newAnswers = [...threatAnswers];
+                                          newAnswers[idx] = e.target.value;
+                                          setThreatAnswers(newAnswers);
+                                        }}
+                                        className="w-4 h-4 text-amber-600"
+                                      />
+                                      <span className="text-gray-700">{opt}</span>
+                                    </label>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-6">
+                            <p className="text-yellow-700">No questions available for this trivia game.</p>
+                          </div>
+                        )}
+
+                        <button
+                          className="w-full bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white px-6 py-4 rounded-xl font-bold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:scale-105 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed mb-4"
+                          disabled={!activeGame?.content?.questions || threatAnswers.filter(a => a !== '').length < (activeGame?.content?.questions?.length || 0)}
+                          onClick={async () => {
+                            try {
+                              // Convert string answers to numbers
+                              const answers = threatAnswers.map(a => parseInt(a) || 0);
+                              const res = await fetch(`${API_BASE}/games/trivia`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ 
+                                  answers,
+                                  challengeId: activeGame?.content?.challengeId || 'programming-basics',
+                                  moduleId: activeModule.id 
+                                })
+                              });
+                              const data = await res.json();
+                              setOutput(data.result || '✅ Quiz submitted!');
+                              if (res.ok && data.passed) markGameAndModuleComplete();
+                            } catch (err) {
+                              setOutput('❌ Error submitting quiz');
+                            }
+                          }}
+                        >
+                          <Send className="w-5 h-5" />
+                          Submit Quiz
+                        </button>
+
+                        {output && (
+                          <div className="bg-gradient-to-br from-gray-900 to-gray-800 text-amber-400 p-5 rounded-xl font-mono text-sm border border-amber-900 shadow-inner">
+                            <pre className="whitespace-pre-wrap">{output}</pre>
+                          </div>
+                        )}
+                        {(token && userId && activeGame) ? (
+                          <div className="mt-4">
+                            <button
+                              className="w-full bg-green-50 text-green-700 px-4 py-2 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                              disabled={isActiveGameCompleted}
+                              onClick={async () => {
+                                try {
+                                  const headers: any = { 'Content-Type': 'application/json' };
+                                  if (token) headers['Authorization'] = `Bearer ${token}`;
+                                  if (token) {
+                                    await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}`, {
+                                      method: 'PUT', headers,
+                                      body: JSON.stringify({ completedModules: [], completedGames: [], achievements: null })
+                                    }).catch(() => {});
+                                  }
+                                  const res = await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}/game/${activeGame.id}/complete`, { method: 'POST', headers });
+                                  if (!res.ok) return;
+                                  const data = await res.json();
+                                  const merged = mergeProgress(trackProgress, data.progress);
+                                  setTrackProgress(merged);
+                                  setProgress(calcPercent(merged, track));
+                                  await saveProgress(merged);
+                                } catch (err) {}
+                              }}
+                            >Mark game complete</button>
+                          </div>
+                        ) : (
+                          activeGame ? (
+                            <div className="mt-4">
+                              <button
+                                disabled
+                                className="w-full opacity-60 cursor-not-allowed bg-gray-100 text-gray-500 px-4 py-2 rounded-lg font-semibold"
+                                title="Sign in to mark game as complete"
+                              >Mark game complete</button>
+                            </div>
+                          ) : null
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1964,7 +2343,39 @@ const TrackDetails: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="flex gap-4 justify-center">
+                <div className="flex gap-4 justify-center flex-wrap">
+                  <button
+                    onClick={async () => {
+                      setShowCompletionAnimation(false);
+                      // Try to generate certificate
+                      if (token && userId && track) {
+                        try {
+                          const res = await fetch(`${API_BASE}/certificates/generate`, {
+                            method: 'POST',
+                            headers: {
+                              'Content-Type': 'application/json',
+                              'Authorization': `Bearer ${token}`
+                            },
+                            body: JSON.stringify({ trackId: track.id })
+                          });
+                          const data = await res.json();
+                          if (res.ok && data.certificate) {
+                            // Redirect to certificate page
+                            router.push(`/certificate/${data.certificate.id}`);
+                          } else {
+                            // Show message if not eligible
+                            alert(data.message || data.error || 'Certificate not available for this track');
+                          }
+                        } catch (err) {
+                          console.error('Error generating certificate:', err);
+                        }
+                      }
+                    }}
+                    className="bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 text-white px-8 py-3 rounded-xl font-bold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:scale-105 flex items-center gap-2"
+                  >
+                    <Trophy className="w-5 h-5" />
+                    Get Certificate
+                  </button>
                   <button
                     onClick={() => setShowCompletionAnimation(false)}
                     className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white px-8 py-3 rounded-xl font-bold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:scale-105"

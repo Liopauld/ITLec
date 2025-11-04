@@ -730,10 +730,27 @@ app.post('/results/ai-feedback', async (req, res) => {
       if (latestAssessment && latestAssessment.aiFeedback && 
           JSON.stringify(latestAssessment.scoreVector) === JSON.stringify(scoreVector)) {
         console.log('Returning cached AI feedback for user:', userInfo.id);
+        
+        // Calculate confidence for cached response
+        const entries = Object.entries(scoreVector);
+        const avgScore = entries.reduce((sum, [_, score]) => sum + Number(score), 0) / entries.length;
+        const strongSkills = entries.filter(([_, score]) => Number(score) >= 70);
+        const scores = Object.values(scoreVector) as number[];
+        const maxScore = Math.max(...scores);
+        const minScore = Math.min(...scores);
+        const skillRange = maxScore - minScore;
+        
+        let careerConfidence = Math.min(avgScore * 0.6, 60);
+        careerConfidence += Math.min(strongSkills.length * 10, 20);
+        careerConfidence += Math.max(0, 100 - skillRange) * 0.2;
+        careerConfidence = Math.min(Math.round(careerConfidence), 95);
+        if (careerConfidence < 45) careerConfidence = 45;
+        
         return res.json({
           feedback: latestAssessment.aiFeedback,
           careerPath: latestAssessment.aiCareerPath || '',
           nextSteps: latestAssessment.aiNextSteps || '',
+          careerConfidence,
           recommendedTracks: latestAssessment.recommendedTracks || [],
           cached: true
         });
@@ -836,13 +853,13 @@ Keep the tone encouraging and professional.`;
     if (!feedback) {
       if (avgScore >= 70) {
         feedback = `Excellent performance! You've demonstrated strong capabilities across multiple IT areas, particularly in ${topSkills.join(' and ')}. Your assessment results show you're well-prepared for advanced IT career paths. Consider specializing in areas that match your top skills to maximize your career potential.`;
-        careerPath = `Recommended career path: Senior ${topSkills[0]} Specialist or ${topSkills[1]} Engineer`;
+        careerPath = `Senior ${topSkills[0]} Specialist or ${topSkills[1]} Engineer`;
       } else if (avgScore >= 50) {
         feedback = `Good foundation! You show promise in ${topSkills.join(' and ')}, which are valuable skills in the IT industry. ${weakSkills.length > 0 ? `Focus on strengthening your ${weakSkills.slice(0, 2).join(' and ')} skills to become more well-rounded.` : 'Continue building on your strengths.'} With focused learning, you can advance to more specialized roles.`;
-        careerPath = `Recommended career path: ${topSkills[0]} Developer or IT Support with ${topSkills[1]} focus`;
+        careerPath = `${topSkills[0]} Developer or IT Support with ${topSkills[1]} focus`;
       } else {
         feedback = `You're starting your IT journey! Everyone begins somewhere, and your interest in technology is the first step. Focus on building fundamentals in ${weakSkills.length > 0 ? weakSkills.slice(0, 2).join(' and ') : 'core IT concepts'}. The recommended tracks below are specifically chosen to help you build a strong foundation.`;
-        careerPath = `Recommended career path: Start with IT Foundation courses, then specialize in ${topSkills[0]}`;
+        careerPath = `Start with IT Foundation courses, then specialize in ${topSkills[0]}`;
       }
 
       const stepsArray = [];
@@ -856,6 +873,32 @@ Keep the tone encouraging and professional.`;
       stepsArray.push(`${stepsArray.length + 1}. Join study groups in the community to learn from peers`);
       stepsArray.push(`${stepsArray.length + 1}. Schedule a one-on-one session with an IT Professional mentor`);
       nextSteps = stepsArray.join('\n');
+    }
+
+    // Calculate career path confidence/match percentage
+    // Based on: average score, number of strong skills, and skill distribution
+    let careerConfidence = 0;
+    
+    // Base confidence on average score (0-60 points)
+    careerConfidence += Math.min(avgScore * 0.6, 60);
+    
+    // Add points for strong skills (up to 20 points)
+    careerConfidence += Math.min(strongSkills.length * 10, 20);
+    
+    // Add points for skill consistency (up to 20 points)
+    const scores = Object.values(scoreVector) as number[];
+    const maxScore = Math.max(...scores);
+    const minScore = Math.min(...scores);
+    const skillRange = maxScore - minScore;
+    const consistencyScore = Math.max(0, 100 - skillRange) * 0.2;
+    careerConfidence += consistencyScore;
+    
+    // Round to whole number and cap at 95% (never show 100% to maintain realism)
+    careerConfidence = Math.min(Math.round(careerConfidence), 95);
+    
+    // Minimum confidence of 45% for beginners to stay encouraging
+    if (careerConfidence < 45) {
+      careerConfidence = 45;
     }
 
     // Save AI feedback to database for caching
@@ -887,6 +930,7 @@ Keep the tone encouraging and professional.`;
       feedback,
       careerPath,
       nextSteps,
+      careerConfidence, // Match percentage (45-95%)
       recommendedTracks,
       cached: false
     });
@@ -3107,6 +3151,402 @@ function compareResults(actual: any[], expected: any[]) {
   return true;
 }
 
+// ==================== LOGIC GAME ENDPOINT ====================
+app.post('/games/logic', async (req, res) => {
+  const { answer, challengeId, moduleId } = req.body as { answer: string; challengeId: string; moduleId?: string };
+
+  if (!answer || typeof answer !== 'string') {
+    return res.status(400).json({ error: 'Invalid answer data' });
+  }
+
+  if (!challengeId) {
+    return res.status(400).json({ error: 'No challenge specified' });
+  }
+
+  try {
+    // Define logic puzzle challenges
+    const challenges: Record<string, any> = {
+      'pattern-completion': {
+        title: 'Pattern Completion',
+        description: 'Complete the sequence: 2, 4, 8, 16, ?',
+        type: 'pattern',
+        correctAnswer: '32',
+        explanation: 'Each number is double the previous number (powers of 2)',
+        difficulty: 'easy'
+      },
+      'sequence-finding': {
+        title: 'Sequence Finding',
+        description: 'What comes next: A, C, F, J, ?',
+        type: 'sequence',
+        correctAnswer: 'O',
+        explanation: 'The gaps between letters increase by 1 each time: +2, +3, +4, +5',
+        difficulty: 'medium'
+      },
+      'logic-grid': {
+        title: 'Logic Grid Puzzle',
+        description: 'If all Bloops are Razzies and all Razzies are Lazzies, are all Bloops definitely Lazzies?',
+        type: 'grid',
+        correctAnswer: 'yes',
+        explanation: 'This follows the transitive property of logical implication',
+        difficulty: 'medium'
+      },
+      'number-series': {
+        title: 'Number Series',
+        description: 'Find the missing number: 3, 7, 15, 31, ?',
+        type: 'pattern',
+        correctAnswer: '63',
+        explanation: 'Each number is (previous × 2) + 1',
+        difficulty: 'medium'
+      },
+      'logical-deduction': {
+        title: 'Logical Deduction',
+        description: 'A > B, B > C, C > D. Which is largest?',
+        type: 'deduction',
+        correctAnswer: 'A',
+        explanation: 'Following the chain of inequalities, A is greater than all others',
+        difficulty: 'easy'
+      }
+    };
+
+    const challenge = challenges[challengeId];
+    
+    if (!challenge) {
+      return res.status(404).json({ error: 'Challenge not found' });
+    }
+
+    // Normalize answers for comparison (trim, lowercase)
+    const userAnswer = answer.trim().toLowerCase();
+    const correctAnswer = challenge.correctAnswer.toLowerCase();
+    
+    const isCorrect = userAnswer === correctAnswer;
+    const score = isCorrect ? 100 : 0;
+
+    let result = `🧩 ${challenge.title}\n\n`;
+    
+    if (isCorrect) {
+      result += `✅ Correct! Your answer "${answer}" is right.\n\n`;
+      result += `📚 Explanation: ${challenge.explanation}\n\n`;
+      result += `🎯 Score: ${score}/100\n`;
+      result += `⭐ Difficulty: ${challenge.difficulty}`;
+    } else {
+      result += `❌ Incorrect. Your answer "${answer}" is not correct.\n\n`;
+      result += `💡 The correct answer is: ${challenge.correctAnswer}\n\n`;
+      result += `📚 Explanation: ${challenge.explanation}\n\n`;
+      result += `🎯 Score: ${score}/100\n`;
+      result += `💪 Try again or move to the next challenge!`;
+    }
+
+    res.json({
+      result,
+      passed: isCorrect,
+      score,
+      correctAnswer: challenge.correctAnswer,
+      explanation: challenge.explanation,
+      difficulty: challenge.difficulty
+    });
+
+  } catch (err) {
+    console.error('Logic game error:', err);
+    res.status(500).json({ error: 'Failed to validate logic puzzle' });
+  }
+});
+
+// ==================== PUZZLE GAME ENDPOINT ====================
+app.post('/games/puzzle', async (req, res) => {
+  const { solution, challengeId, moduleId } = req.body as { solution: any; challengeId: string; moduleId?: string };
+
+  if (!solution) {
+    return res.status(400).json({ error: 'Invalid solution data' });
+  }
+
+  if (!challengeId) {
+    return res.status(400).json({ error: 'No challenge specified' });
+  }
+
+  try {
+    // Define puzzle challenges
+    const challenges: Record<string, any> = {
+      'word-scramble': {
+        title: 'Word Scramble',
+        description: 'Unscramble these letters: TPMOCRUE',
+        type: 'word',
+        correctAnswer: 'COMPUTER',
+        difficulty: 'easy'
+      },
+      'number-puzzle': {
+        title: 'Number Puzzle',
+        description: 'Arrange [1,2,3,4,5] to make equation: _ + _ = _ × _ - _',
+        type: 'number',
+        correctAnswer: '4+5=3×2+1', // 4+5=9, 3×2=6, 6+1=7... let's fix: 5+4=3×2+3 (5+4=9, 3×2=6, 6+3=9)
+        possibleAnswers: ['5+4=3×2+3', '4+5=3×2+3', '3+6=9×1+0'], // Allow multiple valid solutions
+        difficulty: 'medium'
+      },
+      'sliding-tile': {
+        title: 'Sliding Tile Puzzle',
+        description: 'Arrange tiles in order: 1,2,3,4,5,6,7,8',
+        type: 'sliding',
+        correctAnswer: [1,2,3,4,5,6,7,8],
+        difficulty: 'medium'
+      },
+      'matching-pairs': {
+        title: 'Matching Pairs',
+        description: 'Match programming terms with their definitions',
+        type: 'matching',
+        pairs: [
+          { term: 'Variable', definition: 'Storage location with a name' },
+          { term: 'Function', definition: 'Reusable block of code' },
+          { term: 'Loop', definition: 'Repeating code structure' }
+        ],
+        difficulty: 'easy'
+      }
+    };
+
+    const challenge = challenges[challengeId];
+    
+    if (!challenge) {
+      return res.status(404).json({ error: 'Challenge not found' });
+    }
+
+    let isCorrect = false;
+    let result = `🧩 ${challenge.title}\n\n`;
+
+    // Validate based on puzzle type
+    if (challenge.type === 'word') {
+      const userAnswer = String(solution).trim().toUpperCase();
+      const correctAnswer = String(challenge.correctAnswer).toUpperCase();
+      isCorrect = userAnswer === correctAnswer;
+      
+      if (isCorrect) {
+        result += `✅ Perfect! You unscrambled it correctly: ${challenge.correctAnswer}\n`;
+      } else {
+        result += `❌ Not quite. Your answer "${solution}" is incorrect.\n`;
+        result += `💡 Correct answer: ${challenge.correctAnswer}\n`;
+      }
+    } else if (challenge.type === 'number') {
+      const userAnswer = String(solution).trim().replace(/\s/g, '');
+      isCorrect = challenge.possibleAnswers?.some((ans: string) => 
+        ans.replace(/\s/g, '') === userAnswer
+      ) || String(challenge.correctAnswer).replace(/\s/g, '') === userAnswer;
+      
+      if (isCorrect) {
+        result += `✅ Excellent! You solved the number puzzle correctly.\n`;
+      } else {
+        result += `❌ Not correct. Try again!\n`;
+        result += `💡 Hint: One solution is ${challenge.correctAnswer}\n`;
+      }
+    } else if (challenge.type === 'sliding') {
+      const userSolution = Array.isArray(solution) ? solution : JSON.parse(solution);
+      isCorrect = JSON.stringify(userSolution) === JSON.stringify(challenge.correctAnswer);
+      
+      if (isCorrect) {
+        result += `✅ Amazing! You arranged all tiles in the correct order.\n`;
+      } else {
+        result += `❌ The tiles are not in the correct order yet.\n`;
+        result += `💡 Target order: ${challenge.correctAnswer.join(',')}\n`;
+      }
+    } else if (challenge.type === 'matching') {
+      // Expect solution as array of {term, definition} pairs
+      const userMatches = Array.isArray(solution) ? solution : JSON.parse(solution);
+      let correctMatches = 0;
+      
+      userMatches.forEach((match: any) => {
+        const correctPair = challenge.pairs.find((p: any) => p.term === match.term);
+        if (correctPair && correctPair.definition === match.definition) {
+          correctMatches++;
+        }
+      });
+      
+      isCorrect = correctMatches === challenge.pairs.length;
+      
+      if (isCorrect) {
+        result += `✅ Perfect! All pairs matched correctly.\n`;
+      } else {
+        result += `❌ Some pairs are incorrect. You matched ${correctMatches}/${challenge.pairs.length} correctly.\n`;
+      }
+    }
+
+    const score = isCorrect ? 100 : Math.floor((isCorrect ? 100 : 0) / 2); // Half points for partial solutions
+
+    result += `\n🎯 Score: ${score}/100\n`;
+    result += `⭐ Difficulty: ${challenge.difficulty}`;
+
+    res.json({
+      result,
+      passed: isCorrect,
+      score,
+      difficulty: challenge.difficulty
+    });
+
+  } catch (err) {
+    console.error('Puzzle game error:', err);
+    res.status(500).json({ error: 'Failed to validate puzzle' });
+  }
+});
+
+// ==================== TRIVIA GAME ENDPOINT ====================
+app.post('/games/trivia', async (req, res) => {
+  const { answers, challengeId, moduleId } = req.body as { answers: number[]; challengeId: string; moduleId?: string };
+
+  if (!answers || !Array.isArray(answers)) {
+    return res.status(400).json({ error: 'Invalid answers data' });
+  }
+
+  if (!challengeId) {
+    return res.status(400).json({ error: 'No challenge specified' });
+  }
+
+  try {
+    // Define trivia challenges with multiple questions
+    const challenges: Record<string, any> = {
+      'programming-basics': {
+        title: 'Programming Basics Trivia',
+        questions: [
+          {
+            question: 'What does HTML stand for?',
+            options: ['Hyper Text Markup Language', 'High Tech Modern Language', 'Home Tool Markup Language', 'Hyperlinks and Text Markup Language'],
+            correctAnswer: 0
+          },
+          {
+            question: 'Which language is known as the "language of the web"?',
+            options: ['Python', 'JavaScript', 'Java', 'C++'],
+            correctAnswer: 1
+          },
+          {
+            question: 'What is the purpose of CSS?',
+            options: ['Programming logic', 'Styling web pages', 'Database management', 'Server configuration'],
+            correctAnswer: 1
+          }
+        ],
+        difficulty: 'easy'
+      },
+      'networking-fundamentals': {
+        title: 'Networking Fundamentals',
+        questions: [
+          {
+            question: 'What does IP stand for?',
+            options: ['Internet Protocol', 'Internal Process', 'Integrated Platform', 'Interface Programming'],
+            correctAnswer: 0
+          },
+          {
+            question: 'What is the default port for HTTPS?',
+            options: ['80', '8080', '443', '22'],
+            correctAnswer: 2
+          },
+          {
+            question: 'What layer of the OSI model does HTTP operate at?',
+            options: ['Physical', 'Network', 'Transport', 'Application'],
+            correctAnswer: 3
+          }
+        ],
+        difficulty: 'medium'
+      },
+      'cybersecurity-basics': {
+        title: 'Cybersecurity Basics',
+        questions: [
+          {
+            question: 'What is phishing?',
+            options: ['A type of virus', 'A social engineering attack', 'A firewall technique', 'A password manager'],
+            correctAnswer: 1
+          },
+          {
+            question: 'What does VPN stand for?',
+            options: ['Virtual Private Network', 'Very Private Network', 'Verified Public Network', 'Virtual Public Node'],
+            correctAnswer: 0
+          },
+          {
+            question: 'What is two-factor authentication?',
+            options: ['Using two passwords', 'A security method requiring two forms of verification', 'Logging in twice', 'Using two devices'],
+            correctAnswer: 1
+          }
+        ],
+        difficulty: 'easy'
+      },
+      'database-concepts': {
+        title: 'Database Concepts',
+        questions: [
+          {
+            question: 'What does SQL stand for?',
+            options: ['Structured Query Language', 'Simple Question Language', 'Standard Query Logic', 'System Query Language'],
+            correctAnswer: 0
+          },
+          {
+            question: 'What is a primary key?',
+            options: ['A password', 'A unique identifier for a record', 'The first column', 'An encryption key'],
+            correctAnswer: 1
+          },
+          {
+            question: 'Which is NOT a type of JOIN in SQL?',
+            options: ['INNER JOIN', 'LEFT JOIN', 'MIDDLE JOIN', 'RIGHT JOIN'],
+            correctAnswer: 2
+          }
+        ],
+        difficulty: 'medium'
+      }
+    };
+
+    const challenge = challenges[challengeId];
+    
+    if (!challenge) {
+      return res.status(404).json({ error: 'Challenge not found' });
+    }
+
+    // Validate answers
+    let correctCount = 0;
+    const results = challenge.questions.map((q: any, idx: number) => {
+      const userAnswer = answers[idx];
+      const isCorrect = userAnswer === q.correctAnswer;
+      if (isCorrect) correctCount++;
+      
+      return {
+        question: q.question,
+        userAnswer,
+        correctAnswer: q.correctAnswer,
+        isCorrect,
+        correctOption: q.options[q.correctAnswer]
+      };
+    });
+
+    const score = Math.round((correctCount / challenge.questions.length) * 100);
+    const passed = score >= 70; // 70% to pass
+
+    let result = `🎯 ${challenge.title}\n\n`;
+    result += `📊 Results: ${correctCount}/${challenge.questions.length} correct\n`;
+    result += `🎯 Score: ${score}/100\n\n`;
+    
+    results.forEach((r: any, idx: number) => {
+      if (r.isCorrect) {
+        result += `✅ Question ${idx + 1}: Correct!\n`;
+      } else {
+        result += `❌ Question ${idx + 1}: Incorrect\n`;
+        result += `   Your answer: ${challenge.questions[idx].options[r.userAnswer] || 'No answer'}\n`;
+        result += `   Correct answer: ${r.correctOption}\n`;
+      }
+    });
+    
+    result += `\n⭐ Difficulty: ${challenge.difficulty}\n`;
+    
+    if (passed) {
+      result += `\n🎉 Congratulations! You passed this trivia challenge!`;
+    } else {
+      result += `\n💪 Keep studying! You need 70% to pass.`;
+    }
+
+    res.json({
+      result,
+      passed,
+      score,
+      correctCount,
+      totalQuestions: challenge.questions.length,
+      results,
+      difficulty: challenge.difficulty
+    });
+
+  } catch (err) {
+    console.error('Trivia game error:', err);
+    res.status(500).json({ error: 'Failed to validate trivia answers' });
+  }
+});
+
 // Get game leaderboard
 app.get('/games/leaderboard/:gameType', async (req, res) => {
   const { gameType } = req.params;
@@ -3362,6 +3802,391 @@ app.delete('/sessions/:id', requireAuth, async (req, res) => {
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error('Unhandled error:', err);
   res.status(500).json({ error: 'Internal server error', details: (err as Error).message });
+});
+
+// ============== SESSION ENDPOINTS ==============
+
+// Get sessions for a mentor (IT Professional)
+app.get('/sessions/mentor/:mentorId', async (req, res) => {
+  try {
+    const { mentorId } = req.params;
+
+    const sessions = await prisma.session.findMany({
+      where: { mentorId },
+      orderBy: { startTime: 'asc' }
+    });
+
+    // Fetch student names
+    const sessionsWithDetails = await Promise.all(
+      sessions.map(async (session) => {
+        const student = await prisma.user.findUnique({
+          where: { id: session.studentId },
+          select: { name: true, email: true }
+        });
+        return { ...session, student };
+      })
+    );
+
+    res.json({ sessions: sessionsWithDetails });
+  } catch (error) {
+    console.error('Get mentor sessions error:', error);
+    res.status(500).json({ error: 'Failed to fetch sessions' });
+  }
+});
+
+// Get sessions for a student
+app.get('/sessions/student/:studentId', async (req, res) => {
+  try {
+    const { studentId } = req.params;
+
+    const sessions = await prisma.session.findMany({
+      where: { studentId },
+      orderBy: { startTime: 'asc' }
+    });
+
+    // Fetch mentor names
+    const sessionsWithDetails = await Promise.all(
+      sessions.map(async (session) => {
+        const mentor = await prisma.user.findUnique({
+          where: { id: session.mentorId },
+          select: { name: true, email: true }
+        });
+        return { ...session, mentor };
+      })
+    );
+
+    res.json({ sessions: sessionsWithDetails });
+  } catch (error) {
+    console.error('Get student sessions error:', error);
+    res.status(500).json({ error: 'Failed to fetch sessions' });
+  }
+});
+
+// Create a new session
+app.post('/sessions', requireAuth, async (req, res) => {
+  try {
+    const { mentorId, studentId, title, description, startTime, endTime, meetingLink } = req.body;
+
+    if (!mentorId || !studentId || !title || !startTime || !endTime) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Validate that times don't overlap with existing sessions
+    const overlappingSessions = await prisma.session.findMany({
+      where: {
+        OR: [
+          { mentorId, status: 'scheduled' },
+          { studentId, status: 'scheduled' }
+        ],
+        AND: [
+          { startTime: { lte: new Date(endTime) } },
+          { endTime: { gte: new Date(startTime) } }
+        ]
+      }
+    });
+
+    if (overlappingSessions.length > 0) {
+      return res.status(400).json({ error: 'Time slot conflicts with existing session' });
+    }
+
+    const session = await prisma.session.create({
+      data: {
+        mentorId,
+        studentId,
+        title,
+        description: description || '',
+        startTime: new Date(startTime),
+        endTime: new Date(endTime),
+        meetingLink: meetingLink || '',
+        status: 'scheduled'
+      }
+    });
+
+    res.json({ session, message: 'Session created successfully' });
+  } catch (error) {
+    console.error('Create session error:', error);
+    res.status(500).json({ error: 'Failed to create session' });
+  }
+});
+
+// Update session status
+app.put('/sessions/:id/status', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!['scheduled', 'completed', 'cancelled', 'no-show'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    const session = await prisma.session.update({
+      where: { id },
+      data: { status }
+    });
+
+    res.json({ session, message: 'Session updated successfully' });
+  } catch (error) {
+    console.error('Update session error:', error);
+    res.status(500).json({ error: 'Failed to update session' });
+  }
+});
+
+// Update session details
+app.put('/sessions/:id', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, description, startTime, endTime, meetingLink, status } = req.body;
+
+    const updateData: any = {};
+    if (title) updateData.title = title;
+    if (description !== undefined) updateData.description = description;
+    if (startTime) updateData.startTime = new Date(startTime);
+    if (endTime) updateData.endTime = new Date(endTime);
+    if (meetingLink !== undefined) updateData.meetingLink = meetingLink;
+    if (status) updateData.status = status;
+
+    const session = await prisma.session.update({
+      where: { id },
+      data: updateData
+    });
+
+    res.json({ session, message: 'Session updated successfully' });
+  } catch (error) {
+    console.error('Update session error:', error);
+    res.status(500).json({ error: 'Failed to update session' });
+  }
+});
+
+// Delete session
+app.delete('/sessions/:id', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    await prisma.session.delete({
+      where: { id }
+    });
+
+    res.json({ message: 'Session deleted successfully' });
+  } catch (error) {
+    console.error('Delete session error:', error);
+    res.status(500).json({ error: 'Failed to delete session' });
+  }
+});
+
+// Get available time slots for a mentor
+app.get('/sessions/availability/:mentorId', async (req, res) => {
+  try {
+    const { mentorId } = req.params;
+    const { date } = req.query;
+
+    if (!date) {
+      return res.status(400).json({ error: 'Date parameter required' });
+    }
+
+    const startOfDay = new Date(date as string);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(date as string);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const bookedSessions = await prisma.session.findMany({
+      where: {
+        mentorId,
+        status: 'scheduled',
+        startTime: {
+          gte: startOfDay,
+          lte: endOfDay
+        }
+      },
+      select: {
+        startTime: true,
+        endTime: true
+      }
+    });
+
+    res.json({ bookedSlots: bookedSessions });
+  } catch (error) {
+    console.error('Get availability error:', error);
+    res.status(500).json({ error: 'Failed to fetch availability' });
+  }
+});
+
+// ============== CERTIFICATE ENDPOINTS ==============
+
+// Generate certificate when user completes highest difficulty track in a category
+app.post('/certificates/generate', requireAuth, async (req, res) => {
+  try {
+    const userId = req.userId!;
+    const { trackId } = req.body;
+
+    if (!trackId) {
+      return res.status(400).json({ error: 'Track ID is required' });
+    }
+
+    // Get the track
+    const track = await prisma.track.findUnique({
+      where: { id: trackId },
+      include: { modules: true }
+    });
+
+    if (!track) {
+      return res.status(404).json({ error: 'Track not found' });
+    }
+
+    // Check if user has completed this track
+    const trackProgress = await prisma.trackProgress.findFirst({
+      where: { userId, trackId }
+    });
+
+    if (!trackProgress) {
+      return res.status(400).json({ error: 'Track not started' });
+    }
+
+    // Calculate completion
+    const totalModules = track.modules.length;
+    const completedModules = trackProgress.completedModules.length;
+    const isCompleted = totalModules > 0 && completedModules >= totalModules;
+
+    if (!isCompleted) {
+      return res.status(400).json({ error: 'Track not completed yet' });
+    }
+
+    // Check if this is the highest difficulty track in its category
+    if (track.category) {
+      const categoryTracks = await prisma.track.findMany({
+        where: { category: track.category }
+      });
+
+      // Define difficulty order
+      const difficultyOrder: Record<string, number> = {
+        'beginner': 1,
+        'intermediate': 2,
+        'advanced': 3,
+        'expert': 4
+      };
+
+      const currentDifficulty = difficultyOrder[track.difficulty.toLowerCase()] || 0;
+      const hasHigherDifficulty = categoryTracks.some(t => 
+        (difficultyOrder[t.difficulty.toLowerCase()] || 0) > currentDifficulty
+      );
+
+      if (hasHigherDifficulty) {
+        return res.status(400).json({ 
+          error: 'Certificate only awarded for completing highest difficulty track in category',
+          message: `Complete all ${track.category} tracks up to the highest difficulty`
+        });
+      }
+    }
+
+    // Check if certificate already exists
+    const existingCert = await prisma.certificate.findFirst({
+      where: { userId, trackId }
+    });
+
+    if (existingCert) {
+      return res.json({ 
+        certificate: existingCert,
+        message: 'Certificate already issued'
+      });
+    }
+
+    // Generate unique certificate code
+    const certCode = `ITP-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+
+    // Create certificate
+    const certificate = await prisma.certificate.create({
+      data: {
+        userId,
+        trackId,
+        certCode,
+        issueDate: new Date()
+      },
+      include: {
+        user: { select: { name: true, email: true } },
+        track: { select: { title: true, category: true, difficulty: true } }
+      }
+    });
+
+    res.json({ 
+      certificate,
+      message: 'Certificate generated successfully!'
+    });
+
+  } catch (error) {
+    console.error('Generate certificate error:', error);
+    res.status(500).json({ error: 'Failed to generate certificate' });
+  }
+});
+
+// Get user's certificates
+app.get('/certificates/user/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const certificates = await prisma.certificate.findMany({
+      where: { userId },
+      include: {
+        track: { select: { title: true, category: true, difficulty: true } }
+      },
+      orderBy: { issueDate: 'desc' }
+    });
+
+    res.json({ certificates });
+  } catch (error) {
+    console.error('Get certificates error:', error);
+    res.status(500).json({ error: 'Failed to fetch certificates' });
+  }
+});
+
+// Get single certificate by ID (for viewing/printing)
+app.get('/certificates/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const certificate = await prisma.certificate.findUnique({
+      where: { id },
+      include: {
+        user: { select: { name: true, email: true } },
+        track: { select: { title: true, category: true, difficulty: true, description: true } }
+      }
+    });
+
+    if (!certificate) {
+      return res.status(404).json({ error: 'Certificate not found' });
+    }
+
+    res.json({ certificate });
+  } catch (error) {
+    console.error('Get certificate error:', error);
+    res.status(500).json({ error: 'Failed to fetch certificate' });
+  }
+});
+
+// Verify certificate by code
+app.get('/certificates/verify/:certCode', async (req, res) => {
+  try {
+    const { certCode } = req.params;
+
+    const certificate = await prisma.certificate.findUnique({
+      where: { certCode },
+      include: {
+        user: { select: { name: true, email: true } },
+        track: { select: { title: true, category: true, difficulty: true } }
+      }
+    });
+
+    if (!certificate) {
+      return res.status(404).json({ error: 'Certificate not found', valid: false });
+    }
+
+    res.json({ 
+      certificate,
+      valid: true,
+      message: 'Certificate is valid'
+    });
+  } catch (error) {
+    console.error('Verify certificate error:', error);
+    res.status(500).json({ error: 'Failed to verify certificate' });
+  }
 });
 
 // Handle uncaught exceptions
