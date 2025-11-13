@@ -1,28 +1,4 @@
-model Game {
-  id        String   @id @default(uuid())
-  name      String
-  type      String // e.g. coding, network, logic, sql-quiz, threat
-  content   Json    // game data/config
-  module    Module? @relation(fields: [moduleId], references: [id])
-  moduleId  String?
-  track     Track?  @relation(fields: [trackId], references: [id])
-  trackId   String?
-}
-model TrackProgress {
-  id         String   @id @default(uuid())
-  user       User     @relation(fields: [userId], references: [id])
-  userId     String
-  track      Track    @relation(fields: [trackId], references: [id])
-  trackId    String
-  completedModules String[] // Array of completed module IDs
-  completedGames   String[] // Array of completed game module IDs
-  achievements     Json?
-  startedAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-}
-// Prisma schema for ITPathfinder MVP
-// Database: PostgreSQL
-
+// Prisma schema for ITPathfinder
 generator client {
   provider = "prisma-client-js"
 }
@@ -33,32 +9,41 @@ datasource db {
 }
 
 model User {
-  id           String   @id @default(uuid())
-  name         String
-  email        String   @unique
-  password     String
-  role         String
-  bio          String?
-  github       String?
-  linkedin     String?
-  skillsVector Json?
-  xp           Int      @default(0)
-  reputation   Int      @default(0)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-  profiles     Profile[]
-  assessments  Assessment[]
-  submissions  Submission[]
-  badges       Badge[]
-  certificates Certificate[]
-  posts        Post[]
-  comments     Comment[]
-  mentor       Mentor?
-  trackProgresses TrackProgress[]
-  lessonProgresses  LessonProgress[]
-  createdTracks Track[]  // Tracks created by this IT Professional
-  createdEvents Event[]  // Events created by this IT Professional
-  eventRegistrations EventRegistration[]
+  id               String             @id @default(uuid())
+  name             String
+  email            String             @unique
+  password         String
+  role             String
+  bio              String?
+  github           String?
+  linkedin         String?
+  skillsVector     Json?
+  xp               Int                @default(0)
+  level            Int                @default(1)
+  badges           String[]           @default([])
+  reputation       Int                @default(0)
+  coins            Int                @default(0)
+  profilePicture   String?
+  emailVerified    Boolean            @default(false)
+  verificationToken String?
+  verificationTokenExpiry DateTime?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  profiles         Profile[]
+  assessments      Assessment[]
+  trackProgresses  TrackProgress[]
+  posts            Post[]
+  comments         Comment[]
+  postLikes        PostLike[]
+  certificates     Certificate[]
+  sessionRequests  SessionRequest[]   @relation("StudentRequests")
+  mentorSessions   SessionRequest[]   @relation("MentorSessions")
+  personalEvents   PersonalCalendarEvent[]
+  createdEvents    Event[]            @relation("EventCreator")
+  eventRegistrations EventRegistration[] @relation("UserRegistrations")
+  createdTracks    Track[]            @relation("TrackCreator")
+
+  @@map("User")
 }
 
 model Profile {
@@ -68,20 +53,26 @@ model Profile {
   education String?
   location  String?
   profilePicture String?
-  // github and linkedin moved to User model
+
+  @@map("Profile")
 }
 
 model Assessment {
-  id         String   @id @default(uuid())
-  user       User     @relation(fields: [userId], references: [id])
-  userId     String
-  createdAt  DateTime @default(now())
-  scoreVector Json
-  rawAnswers Json
-  recommendedTracks Json?
-  aiFeedback String?  // Cached AI-generated feedback
-  aiCareerPath String? // Recommended career path from AI
-  aiNextSteps String? // AI-generated next steps
+  id                 String   @id @default(uuid())
+  user               User     @relation(fields: [userId], references: [id])
+  userId             String
+  createdAt          DateTime @default(now())
+  scoreVector        Json
+  rawAnswers         Json
+  strengths          String[] @default([])
+  weaknesses         String[] @default([])
+  recommendedTracks  Json?
+  aiAnalysis         String?
+  aiFeedback         String?
+  aiCareerPath       String?
+  aiNextSteps        String?
+
+  @@map("Assessment")
 }
 
 model Question {
@@ -94,92 +85,85 @@ model Question {
   weight   Float
   quiz     Quiz?    @relation(fields: [quizId], references: [id])
   quizId   String?
+
+  @@map("Question")
 }
 
 model Track {
-  id          String   @id @default(uuid())
-  title       String
-  description String
-  difficulty  String
-  category    String?  // e.g., programming, web, security, data, etc.
-  prerequisites Json?  // Array of prerequisite track IDs
-  creatorId   String?  // ID of the IT Professional who created this track
-  creator     User?    @relation(fields: [creatorId], references: [id])
-  modules     Module[]
-  games       Game[]
-  certificates Certificate[]
+  id             String          @id @default(uuid())
+  title          String
+  description    String
+  difficulty     String
+  category       String?
+  prerequisites  Json?
+  creatorId      String?
+  creator        User?           @relation("TrackCreator", fields: [creatorId], references: [id])
+  modules        Module[]
+  games          Game[]
   trackProgresses TrackProgress[]
+  certificates   Certificate[]
+
+  @@map("Track")
 }
 
 model Module {
   id        String   @id @default(uuid())
   track     Track    @relation(fields: [trackId], references: [id])
   trackId   String
+  title     String?
   type      String
-  content   Json
-  games     Game[]
-  order     Int
+  content   Json?
+  order     Int      @default(0)
+  coinReward Int     @default(10)
+  hintCost   Int     @default(5)
+  hints      Json?
   lessons   Lesson[]
+  games     Game[]
   quizzes   Quiz[]
+
+  @@map("Module")
 }
 
 model Lesson {
-  id            String   @id @default(uuid())
-  module        Module   @relation(fields: [moduleId], references: [id])
-  moduleId      String
-  title         String
-  subtitle      String?
-  body          Json
-  resources     Json?
-  order         Int      @default(0)
-  estimatedMins Int?
-  authorId      String?
-  isDraft       Boolean  @default(false)
-  version       Int      @default(1)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-
-  @@index([moduleId, order])
-  progresses   LessonProgress[]
-}
-
-model LessonProgress {
-  id        String   @id @default(uuid())
-  lesson    Lesson   @relation(fields: [lessonId], references: [id])
-  lessonId  String
-  user      User     @relation(fields: [userId], references: [id])
-  userId    String
-  completed Boolean  @default(false)
-  startedAt DateTime?
-  finishedAt DateTime?
-  progress  Int?
-  notes     String?
-
-  @@unique([lessonId, userId])
-}
-
-model Quiz {
   id        String   @id @default(uuid())
   module    Module   @relation(fields: [moduleId], references: [id])
   moduleId  String
-  questions Question[]
+  title     String?
+  content   Json
+  assets    Json?
+  order     Int      @default(0)
+
+  @@map("Lesson")
 }
 
-model Submission {
-  id         String   @id @default(uuid())
-  user       User     @relation(fields: [userId], references: [id])
-  userId     String
-  exerciseId String
-  status     String
-  score      Float
-  feedback   String?
+model Game {
+  id        String   @id @default(uuid())
+  module    Module?  @relation(fields: [moduleId], references: [id])
+  moduleId  String?
+  track     Track?   @relation(fields: [trackId], references: [id])
+  trackId   String?
+  name      String?
+  title     String?
+  type      String
+  content   Json
+  order     Int      @default(0)
+
+  @@map("Game")
 }
 
-model Badge {
-  id       String   @id @default(uuid())
-  name     String
-  criteria String
-  users    User[]
+model TrackProgress {
+  id               String   @id @default(uuid())
+  user             User     @relation(fields: [userId], references: [id])
+  userId           String
+  track            Track    @relation(fields: [trackId], references: [id])
+  trackId          String
+  completedModules String[] @default([])
+  completedGames   String[] @default([])
+  achievements     Json?
+  startedAt        DateTime?
+  updatedAt        DateTime?
+
+  @@map("TrackProgress")
 }
 
 model Certificate {
@@ -190,94 +174,162 @@ model Certificate {
   trackId    String
   issueDate  DateTime @default(now())
   certCode   String   @unique
+
+  @@map("Certificate")
 }
 
 model Post {
-  id        String   @id @default(uuid())
-  user      User     @relation(fields: [userId], references: [id])
-  userId    String
-  content   String
-  tags      String[]
-  mediaUrl  String?  // URL to image/video
-  mediaType String?  // 'image' or 'video'
-  comments  Comment[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id         String    @id @default(uuid())
+  user       User      @relation(fields: [userId], references: [id])
+  userId     String
+  content    String
+  tags       String[]  @default([])
+  mediaUrl   String?
+  mediaType  String?
+  likes      Int       @default(0)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  comments   Comment[]
+  postLikes  PostLike[]
+
+  @@map("Post")
 }
 
 model Comment {
-  id      String   @id @default(uuid())
-  post    Post     @relation(fields: [postId], references: [id])
-  postId  String
-  user    User     @relation(fields: [userId], references: [id])
-  userId  String
-  content String
+  id        String   @id @default(uuid())
+  post      Post     @relation(fields: [postId], references: [id])
+  postId    String
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  content   String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@map("Comment")
 }
 
-model Mentor {
+model PostLike {
+  id        String   @id @default(uuid())
+  post      Post     @relation(fields: [postId], references: [id])
+  postId    String
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  createdAt DateTime @default(now())
+
+  @@unique([postId, userId])
+  @@map("PostLike")
+}
+
+model SessionRequest {
+  id          String   @id @default(uuid())
+  student     User     @relation("StudentRequests", fields: [studentId], references: [id])
+  studentId   String
+  mentor      User     @relation("MentorSessions", fields: [mentorId], references: [id])
+  mentorId    String
+  topic       String?
+  message     String?
+  description String?
+  status      String   @default("pending")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("SessionRequest")
+}
+
+model PersonalCalendarEvent {
   id          String   @id @default(uuid())
   user        User     @relation(fields: [userId], references: [id])
-  userId      String   @unique
-  rate        Float?
-  skills      String[]
-  availability Json?
+  userId      String
+  title       String
+  description String?
+  type        String?
+  relatedId   String?
+  startTime   DateTime
+  endTime     DateTime
+  isAllDay    Boolean  @default(false)
+  color       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("PersonalCalendarEvent")
 }
 
-model JobListing {
-  id            String   @id @default(uuid())
-  source        String
-  title         String
-  skillsRequired String[]
-  location      String
-  salaryRange   String
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  type      String
+  title     String
+  message   String
+  relatedId String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("Notification")
 }
 
 model Event {
-  id          String   @id @default(uuid())
-  title       String
-  description String
-  type        String   // 'workshop', 'webinar', 'networking', 'career_fair', etc.
-  startTime   DateTime
-  endTime     DateTime
-  location    String?  // Physical location or "Virtual"
-  virtualLink String?  // Zoom/Meet link for virtual events
-  capacity    Int?     // Maximum attendees
-  creatorId   String   // IT Professional who created the event
-  creator     User     @relation(fields: [creatorId], references: [id])
-  status      String   @default("draft") // 'draft', 'published', 'cancelled', 'completed'
-  tags        String[]
-  imageUrl    String?  // Event banner/cover image
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id            String              @id @default(uuid())
+  title         String
+  description   String?
+  type          String
+  startTime     DateTime
+  endTime       DateTime
+  location      String?
+  virtualLink   String?
+  maxAttendees  Int?
+  capacity      Int?
+  creatorId     String?
+  creator       User?               @relation("EventCreator", fields: [creatorId], references: [id])
+  status        String?
+  tags          String[]            @default([])
+  imageUrl      String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
   registrations EventRegistration[]
+
+  @@map("Event")
 }
 
 model EventRegistration {
-  id        String   @id @default(uuid())
-  event     Event    @relation(fields: [eventId], references: [id])
-  eventId   String
-  user      User     @relation(fields: [userId], references: [id])
-  userId    String
-  status    String   @default("registered") // 'registered', 'attended', 'cancelled'
+  id           String   @id @default(uuid())
+  event        Event    @relation(fields: [eventId], references: [id])
+  eventId      String
+  user         User     @relation("UserRegistrations", fields: [userId], references: [id])
+  userId       String
+  status       String   @default("registered")
   registeredAt DateTime @default(now())
-  attendedAt DateTime?
+  createdAt    DateTime @default(now())
 
   @@unique([eventId, userId])
+  @@map("EventRegistration")
+}
+
+model Quiz {
+  id        String     @id @default(uuid())
+  module    Module     @relation(fields: [moduleId], references: [id])
+  moduleId  String
+  questions Question[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@map("Quiz")
 }
 
 model Session {
   id          String   @id @default(uuid())
-  mentorId    String   // IT Professional conducting the session
-  studentId   String   // Student attending the session
-  title       String
+  mentorId    String
+  studentId   String
+  title       String?
+  topic       String
   description String?
+  meetingLink String?
+  notes       String?
+  status      String
   startTime   DateTime
   endTime     DateTime
-  meetingLink String?  // Zoom/Meet/Teams link
-  status      String   @default("scheduled") // 'scheduled', 'completed', 'cancelled', 'no-show'
-  notes       String?  // Session notes or feedback
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  @@map("Session")
 }

@@ -156,7 +156,7 @@ export default function CreateTrack() {
         lessons: [...mod.lessons, {
           title: '',
           subtitle: '',
-          body: {},
+          body: '',  // Changed from {} to '' for proper text input
           resources: null,
           order: mod.lessons.length,
           estimatedMins: null
@@ -813,31 +813,112 @@ export default function CreateTrack() {
                                       <p className="text-xs text-gray-500 mt-1">💡 Students can reveal hints one at a time when stuck</p>
                                     </div>
 
-                                    <div>
-                                      <label className="block text-xs font-medium text-gray-700 mb-1 flex items-center gap-1">
-                                        Test Cases
-                                        <span className="text-gray-400">(JSON array format)</span>
-                                      </label>
-                                      <textarea
-                                        value={game.content?.testCases ? JSON.stringify(game.content.testCases, null, 2) : ''}
-                                        onChange={(e) => {
-                                          try {
-                                            const testCases = JSON.parse(e.target.value);
-                                            if (Array.isArray(testCases)) {
-                                              updateGame(moduleIndex, gameIndex, 'content', { ...game.content, testCases });
-                                            }
-                                          } catch (err) {
-                                            // Invalid JSON, ignore until valid
-                                          }
-                                        }}
-                                        rows={6}
-                                        className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-xs"
-                                        placeholder={`[\n  { "input": [5], "expected": 120, "description": "5! = 120" },\n  { "input": [0], "expected": 1, "description": "0! = 1" },\n  { "input": [1], "expected": 1, "description": "1! = 1" }\n]`}
-                                      />
-                                      <div className="text-xs text-gray-500 mt-1 space-y-1">
-                                        <p>✅ Used for automatic code validation and feedback</p>
-                                        <p className="font-mono bg-white px-2 py-1 rounded border border-gray-200">
-                                          Format: [{"{ input: [args], expected: result, description: \"optional\" }"}]
+                                    <div className="space-y-3">
+                                      <div className="flex items-center justify-between">
+                                        <label className="block text-xs font-medium text-gray-700">Test Cases</label>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const testCases = game.content?.testCases || [];
+                                            updateGame(moduleIndex, gameIndex, 'content', {
+                                              ...game.content,
+                                              testCases: [...testCases, { input: [], expected: '', description: '' }]
+                                            });
+                                          }}
+                                          className="text-xs bg-green-600 text-white px-3 py-1.5 rounded-lg hover:bg-green-700 transition-colors flex items-center gap-1"
+                                        >
+                                          <Plus className="w-3 h-3" />
+                                          Add Test Case
+                                        </button>
+                                      </div>
+
+                                      {(!game.content?.testCases || game.content.testCases.length === 0) && (
+                                        <p className="text-sm text-gray-500 italic text-center py-3 bg-gray-50 rounded-lg">
+                                          No test cases yet. Click "Add Test Case" to validate student code automatically.
+                                        </p>
+                                      )}
+
+                                      {game.content?.testCases?.map((tc: any, tcIdx: number) => (
+                                        <div key={tcIdx} className="bg-white rounded-lg p-3 space-y-2 border-2 border-green-200">
+                                          <div className="flex items-center justify-between mb-2">
+                                            <span className="text-xs font-bold text-green-700">Test Case {tcIdx + 1}</span>
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                const testCases = [...(game.content?.testCases || [])];
+                                                testCases.splice(tcIdx, 1);
+                                                updateGame(moduleIndex, gameIndex, 'content', { ...game.content, testCases });
+                                              }}
+                                              className="text-red-600 hover:text-red-800 transition-colors"
+                                            >
+                                              <Trash2 className="w-4 h-4" />
+                                            </button>
+                                          </div>
+                                          
+                                          <div>
+                                            <label className="block text-xs font-medium text-gray-600 mb-1">Input Arguments (comma-separated)</label>
+                                            <input
+                                              type="text"
+                                              value={Array.isArray(tc.input) ? tc.input.join(', ') : tc.input || ''}
+                                              onChange={(e) => {
+                                                const testCases = [...(game.content?.testCases || [])];
+                                                const inputValue = e.target.value;
+                                                // Try to parse as numbers, otherwise keep as strings
+                                                const inputs = inputValue.split(',').map(i => {
+                                                  const trimmed = i.trim();
+                                                  const num = Number(trimmed);
+                                                  return isNaN(num) ? trimmed : num;
+                                                }).filter(i => i !== '');
+                                                testCases[tcIdx] = { ...testCases[tcIdx], input: inputs };
+                                                updateGame(moduleIndex, gameIndex, 'content', { ...game.content, testCases });
+                                              }}
+                                              className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-green-500 focus:border-transparent font-mono"
+                                              placeholder="5 or hello, world or [1,2,3]"
+                                            />
+                                            <p className="text-xs text-gray-500 mt-1">e.g., "5" or "hello, world" or "10, 20"</p>
+                                          </div>
+
+                                          <div>
+                                            <label className="block text-xs font-medium text-gray-600 mb-1">Expected Output</label>
+                                            <input
+                                              type="text"
+                                              value={tc.expected || ''}
+                                              onChange={(e) => {
+                                                const testCases = [...(game.content?.testCases || [])];
+                                                const value = e.target.value;
+                                                const num = Number(value);
+                                                testCases[tcIdx] = { ...testCases[tcIdx], expected: isNaN(num) ? value : num };
+                                                updateGame(moduleIndex, gameIndex, 'content', { ...game.content, testCases });
+                                              }}
+                                              className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-green-500 focus:border-transparent font-mono"
+                                              placeholder="120 or true or hello world"
+                                            />
+                                            <p className="text-xs text-gray-500 mt-1">What the function should return</p>
+                                          </div>
+
+                                          <div>
+                                            <label className="block text-xs font-medium text-gray-600 mb-1">Description (optional)</label>
+                                            <input
+                                              type="text"
+                                              value={tc.description || ''}
+                                              onChange={(e) => {
+                                                const testCases = [...(game.content?.testCases || [])];
+                                                testCases[tcIdx] = { ...testCases[tcIdx], description: e.target.value };
+                                                updateGame(moduleIndex, gameIndex, 'content', { ...game.content, testCases });
+                                              }}
+                                              className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                                              placeholder="e.g., 5! = 120"
+                                            />
+                                          </div>
+                                        </div>
+                                      ))}
+
+                                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                                        <p className="text-xs text-blue-800 leading-relaxed">
+                                          <strong>💡 Test Cases Example:</strong> For a factorial function, you might add:<br/>
+                                          • Input: "5", Expected: "120", Description: "5! = 120"<br/>
+                                          • Input: "0", Expected: "1", Description: "0! = 1"<br/>
+                                          • Input: "3", Expected: "6", Description: "3! = 6"
                                         </p>
                                       </div>
                                     </div>
@@ -856,17 +937,29 @@ export default function CreateTrack() {
                             {game.type === 'network' && (
                               <>
                                 <div>
-                                  <label className="block text-xs font-medium text-gray-600 mb-1">Description</label>
+                                  <label className="block text-xs font-medium text-gray-600 mb-1">Challenge Title *</label>
+                                  <input
+                                    type="text"
+                                    value={game.content?.title || ''}
+                                    onChange={(e) => updateGame(moduleIndex, gameIndex, 'content', { ...game.content, title: e.target.value })}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    placeholder="e.g., Build a Simple LAN Network"
+                                    required
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-xs font-medium text-gray-600 mb-1">Description *</label>
                                   <textarea
                                     value={game.content?.description || ''}
                                     onChange={(e) => updateGame(moduleIndex, gameIndex, 'content', { ...game.content, description: e.target.value })}
                                     rows={2}
                                     className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                                     placeholder="Network challenge description"
+                                    required
                                   />
                                 </div>
                                 <div>
-                                  <label className="block text-xs font-medium text-gray-600 mb-1">Devices (comma-separated)</label>
+                                  <label className="block text-xs font-medium text-gray-600 mb-1">Required Devices (comma-separated) *</label>
                                   <input
                                     type="text"
                                     value={game.content?.devices ? game.content.devices.join(', ') : ''}
@@ -876,6 +969,36 @@ export default function CreateTrack() {
                                     }}
                                     className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                                     placeholder="PC, Router, Switch, Server"
+                                    required
+                                  />
+                                  <p className="text-xs text-gray-500 mt-1">💡 Students must connect these devices correctly</p>
+                                </div>
+                                <div>
+                                  <label className="block text-xs font-medium text-gray-600 mb-1">Required Connections *</label>
+                                  <textarea
+                                    value={game.content?.correctConnections ? game.content.correctConnections.join('\n') : ''}
+                                    onChange={(e) => {
+                                      const connections = e.target.value.split('\n').map(c => c.trim()).filter(c => c);
+                                      updateGame(moduleIndex, gameIndex, 'content', { ...game.content, correctConnections: connections });
+                                    }}
+                                    rows={4}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
+                                    placeholder="PC1 -> Router&#10;Router -> Switch&#10;Switch -> Server"
+                                    required
+                                  />
+                                  <p className="text-xs text-gray-500 mt-1">🔗 Format: Device1 -&gt; Device2 (one per line). This validates student's network diagram.</p>
+                                </div>
+                                <div>
+                                  <label className="block text-xs font-medium text-gray-600 mb-1">Hints (one per line)</label>
+                                  <textarea
+                                    value={game.content?.hints ? game.content.hints.join('\n') : ''}
+                                    onChange={(e) => {
+                                      const hints = e.target.value.split('\n').map(h => h.trim()).filter(h => h);
+                                      updateGame(moduleIndex, gameIndex, 'content', { ...game.content, hints });
+                                    }}
+                                    rows={3}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    placeholder="Start with the router in the center&#10;Connect PCs to the switch first"
                                   />
                                 </div>
                               </>
@@ -884,23 +1007,76 @@ export default function CreateTrack() {
                             {game.type === 'threat' && (
                               <>
                                 <div>
-                                  <label className="block text-xs font-medium text-gray-600 mb-1">Scenario Details</label>
+                                  <label className="block text-xs font-medium text-gray-600 mb-1">Scenario Title *</label>
+                                  <input
+                                    type="text"
+                                    value={game.content?.title || ''}
+                                    onChange={(e) => updateGame(moduleIndex, gameIndex, 'content', { ...game.content, title: e.target.value })}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    placeholder="e.g., Phishing Email Attack"
+                                    required
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-xs font-medium text-gray-600 mb-1">Scenario Details *</label>
                                   <textarea
                                     value={game.content?.details || ''}
                                     onChange={(e) => updateGame(moduleIndex, gameIndex, 'content', { ...game.content, details: e.target.value })}
                                     rows={3}
                                     className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                                    placeholder="Security scenario description"
+                                    placeholder="Describe the security scenario that students need to analyze..."
+                                    required
                                   />
                                 </div>
                                 <div>
-                                  <label className="block text-xs font-medium text-gray-600 mb-1">Question</label>
+                                  <label className="block text-xs font-medium text-gray-600 mb-1">Question *</label>
                                   <input
                                     type="text"
                                     value={game.content?.question || ''}
                                     onChange={(e) => updateGame(moduleIndex, gameIndex, 'content', { ...game.content, question: e.target.value })}
                                     className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                                    placeholder="What threats do you identify?"
+                                    placeholder="What security threats do you identify in this scenario?"
+                                    required
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-xs font-medium text-gray-600 mb-1">Correct Threats (one per line) *</label>
+                                  <textarea
+                                    value={game.content?.correctThreats ? game.content.correctThreats.join('\n') : ''}
+                                    onChange={(e) => {
+                                      const threats = e.target.value.split('\n').map(t => t.trim()).filter(t => t);
+                                      updateGame(moduleIndex, gameIndex, 'content', { ...game.content, correctThreats: threats });
+                                    }}
+                                    rows={4}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    placeholder="Phishing&#10;Social Engineering&#10;Malware&#10;Data Breach"
+                                    required
+                                  />
+                                  <p className="text-xs text-gray-500 mt-1">🎯 Students must identify these threats to complete the game</p>
+                                </div>
+                                <div>
+                                  <label className="block text-xs font-medium text-gray-600 mb-1">Possible Options (one per line) *</label>
+                                  <textarea
+                                    value={game.content?.options ? game.content.options.join('\n') : ''}
+                                    onChange={(e) => {
+                                      const options = e.target.value.split('\n').map(o => o.trim()).filter(o => o);
+                                      updateGame(moduleIndex, gameIndex, 'content', { ...game.content, options });
+                                    }}
+                                    rows={6}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    placeholder="Phishing&#10;Social Engineering&#10;Malware&#10;Data Breach&#10;DDoS Attack&#10;SQL Injection"
+                                    required
+                                  />
+                                  <p className="text-xs text-gray-500 mt-1">📋 All options shown to students (include correct threats + wrong options)</p>
+                                </div>
+                                <div>
+                                  <label className="block text-xs font-medium text-gray-600 mb-1">Explanation</label>
+                                  <textarea
+                                    value={game.content?.explanation || ''}
+                                    onChange={(e) => updateGame(moduleIndex, gameIndex, 'content', { ...game.content, explanation: e.target.value })}
+                                    rows={2}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    placeholder="Explain why these are the correct threats..."
                                   />
                                 </div>
                               </>
@@ -909,27 +1085,128 @@ export default function CreateTrack() {
                             {game.type === 'sql-quiz' && (
                               <>
                                 <div>
-                                  <label className="block text-xs font-medium text-gray-600 mb-1">Description</label>
+                                  <label className="block text-xs font-medium text-gray-600 mb-1">Quiz Title *</label>
+                                  <input
+                                    type="text"
+                                    value={game.content?.title || ''}
+                                    onChange={(e) => updateGame(moduleIndex, gameIndex, 'content', { ...game.content, title: e.target.value })}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    placeholder="e.g., Basic SELECT Queries"
+                                    required
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-xs font-medium text-gray-600 mb-1">Description *</label>
                                   <textarea
                                     value={game.content?.description || ''}
                                     onChange={(e) => updateGame(moduleIndex, gameIndex, 'content', { ...game.content, description: e.target.value })}
                                     rows={2}
                                     className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                                    placeholder="SQL quiz description"
+                                    placeholder="Write SQL queries to complete the challenges..."
+                                    required
                                   />
                                 </div>
                                 <div>
-                                  <label className="block text-xs font-medium text-gray-600 mb-1">Questions (one per line)</label>
+                                  <label className="block text-xs font-medium text-gray-600 mb-1">Database Schema (optional)</label>
                                   <textarea
-                                    value={game.content?.questions ? game.content.questions.map((q: any) => q.question || q).join('\n') : ''}
-                                    onChange={(e) => {
-                                      const questions = e.target.value.split('\n').filter(q => q.trim()).map(q => ({ question: q.trim() }));
-                                      updateGame(moduleIndex, gameIndex, 'content', { ...game.content, questions });
-                                    }}
+                                    value={game.content?.schema || ''}
+                                    onChange={(e) => updateGame(moduleIndex, gameIndex, 'content', { ...game.content, schema: e.target.value })}
                                     rows={3}
-                                    className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                                    placeholder="Write a SELECT query to..."
+                                    className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
+                                    placeholder="Table: users (id, name, email, age)"
                                   />
+                                  <p className="text-xs text-gray-500 mt-1">📊 Show students the table structure they'll be querying</p>
+                                </div>
+                                
+                                <div className="space-y-4 bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-xl p-4">
+                                  <div className="flex items-center justify-between">
+                                    <h5 className="font-bold text-gray-800">SQL Questions</h5>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const questions = game.content?.questions || [];
+                                        updateGame(moduleIndex, gameIndex, 'content', {
+                                          ...game.content,
+                                          questions: [...questions, { question: '', correctAnswer: '', explanation: '' }]
+                                        });
+                                      }}
+                                      className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-1"
+                                    >
+                                      <Plus className="w-3 h-3" />
+                                      Add Question
+                                    </button>
+                                  </div>
+
+                                  {(!game.content?.questions || game.content.questions.length === 0) && (
+                                    <p className="text-sm text-gray-500 italic text-center py-2">No questions added yet. Click "Add Question" to create one.</p>
+                                  )}
+
+                                  {game.content?.questions?.map((q: any, qIdx: number) => (
+                                    <div key={qIdx} className="bg-white rounded-lg p-3 space-y-2 border border-blue-200">
+                                      <div className="flex items-center justify-between mb-2">
+                                        <span className="text-xs font-bold text-blue-700">Question {qIdx + 1}</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const questions = [...(game.content?.questions || [])];
+                                            questions.splice(qIdx, 1);
+                                            updateGame(moduleIndex, gameIndex, 'content', { ...game.content, questions });
+                                          }}
+                                          className="text-red-600 hover:text-red-800 transition-colors"
+                                        >
+                                          <Trash2 className="w-4 h-4" />
+                                        </button>
+                                      </div>
+                                      
+                                      <div>
+                                        <label className="block text-xs font-medium text-gray-600 mb-1">Question Prompt *</label>
+                                        <textarea
+                                          value={q.question || ''}
+                                          onChange={(e) => {
+                                            const questions = [...(game.content?.questions || [])];
+                                            questions[qIdx] = { ...questions[qIdx], question: e.target.value };
+                                            updateGame(moduleIndex, gameIndex, 'content', { ...game.content, questions });
+                                          }}
+                                          rows={2}
+                                          className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                          placeholder="e.g., Write a query to select all users older than 25"
+                                          required
+                                        />
+                                      </div>
+
+                                      <div>
+                                        <label className="block text-xs font-medium text-gray-600 mb-1">Correct SQL Answer *</label>
+                                        <textarea
+                                          value={q.correctAnswer || ''}
+                                          onChange={(e) => {
+                                            const questions = [...(game.content?.questions || [])];
+                                            questions[qIdx] = { ...questions[qIdx], correctAnswer: e.target.value };
+                                            updateGame(moduleIndex, gameIndex, 'content', { ...game.content, questions });
+                                          }}
+                                          rows={2}
+                                          className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono"
+                                          placeholder="SELECT * FROM users WHERE age > 25"
+                                          required
+                                        />
+                                        <p className="text-xs text-gray-500 mt-1">✅ Students' queries will be compared to this</p>
+                                      </div>
+
+                                      <div>
+                                        <label className="block text-xs font-medium text-gray-600 mb-1">Explanation (optional)</label>
+                                        <textarea
+                                          value={q.explanation || ''}
+                                          onChange={(e) => {
+                                            const questions = [...(game.content?.questions || [])];
+                                            questions[qIdx] = { ...questions[qIdx], explanation: e.target.value };
+                                            updateGame(moduleIndex, gameIndex, 'content', { ...game.content, questions });
+                                          }}
+                                          rows={2}
+                                          className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                          placeholder="Explain the solution..."
+                                        />
+                                      </div>
+                                    </div>
+                                  ))}
                                 </div>
                               </>
                             )}

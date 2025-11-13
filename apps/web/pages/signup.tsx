@@ -20,10 +20,8 @@ export default function Signup() {
     });
     const data = await res.json();
     if (res.ok) {
-      setMessage('Welcome to ITPathfinder! Your account has been created successfully. Redirecting to login...');
-      setTimeout(() => {
-        router.push('/login');
-      }, 1200);
+      setMessage(data.message || 'Registration successful! Please check your email to verify your account.');
+      // Don't redirect automatically - user needs to verify email first
     } else {
       setMessage(data.error || 'Unable to create account. Please try again.');
     }
@@ -86,7 +84,6 @@ export default function Signup() {
                 >
                   <option value="student">Student</option>
                   <option value="professional">IT Professional</option>
-                  <option value="career_switcher">Career Switcher</option>
                 </select>
               </div>
 
@@ -111,20 +108,12 @@ export default function Signup() {
               </div>
 
               <p className="text-center text-sm text-gray-600">
-                By signing up, you agree to our{' '}
-                <Link href="/terms" className="text-blue-600 hover:text-blue-500 font-medium">
-                  Terms of Service
-                </Link>{' '}
-                and{' '}
-                <Link href="/privacy" className="text-blue-600 hover:text-blue-500 font-medium">
-                  Privacy Policy
-                </Link>
               </p>
             </form>
 
             {message && (
               <div className={`mt-4 p-4 rounded-xl ${
-                message.includes('successfully')
+                message.includes('successful') || message.includes('successfully')
                   ? 'bg-green-50 text-green-800 border border-green-200'
                   : 'bg-red-50 text-red-800 border border-red-200'
               }`}>

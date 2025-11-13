@@ -12,6 +12,18 @@ export default function ProfilePage() {
   const [error, setError] = useState('');
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
+  const [badgeDefinitions, setBadgeDefinitions] = useState<any>({});
+  const [progressSummary, setProgressSummary] = useState<{ completedTracks: number; completedModules: number } | null>(null);
+
+  const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:4000';
+
+  useEffect(() => {
+    // Fetch badge definitions
+    fetch(`${API_BASE}/badges`)
+      .then(res => res.json())
+      .then(data => setBadgeDefinitions(data.badges || {}))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const userId = localStorage.getItem('userId');
@@ -19,7 +31,7 @@ export default function ProfilePage() {
       router.replace('/login');
       return;
     }
-    fetch(`http://localhost:4000/users/${userId}`)
+    fetch(`${API_BASE}/users/${userId}`)
       .then(res => res.json())
       .then(data => {
         const userData = data.user || {};
@@ -45,6 +57,14 @@ export default function ProfilePage() {
       .catch(() => {
         router.replace('/login');
       });
+    
+    // Fetch progress summary
+    fetch(`${API_BASE}/users/${userId}/progress-summary`)
+      .then(res => res.json())
+      .then(data => {
+        setProgressSummary(data);
+      })
+      .catch(() => {});
   }, [router]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -69,7 +89,7 @@ export default function ProfilePage() {
     
     try {
       const userId = user.id;
-      const res = await fetch(`http://localhost:4000/users/${userId}`, {
+      const res = await fetch(`${API_BASE}/users/${userId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form)
@@ -112,13 +132,6 @@ export default function ProfilePage() {
     }
     setEditing(false);
     setError('');
-  };
-
-  const stats = {
-    coursesCompleted: 5,
-    xpEarned: 2450,
-    badgesUnlocked: 8,
-    joinedDate: 'January 2025'
   };
 
   if (!user) {
@@ -207,7 +220,7 @@ export default function ProfilePage() {
                             const formData = new FormData();
                             formData.append('image', file);
                             try {
-                              const res = await fetch(`http://localhost:4000/users/${user.id}/profile-picture`, {
+                              const res = await fetch(`${API_BASE}/users/${user.id}/profile-picture`, {
                                 method: 'POST',
                                 body: formData
                               });
@@ -241,7 +254,7 @@ export default function ProfilePage() {
                     
                     <div className="flex items-center justify-center gap-2 text-sm text-gray-600 bg-gray-50 rounded-xl py-3 px-4">
                       <Calendar className="w-4 h-4 text-blue-600" />
-                      <span className="font-medium">Member since {stats.joinedDate}</span>
+                      <span className="font-medium">Member since {new Date(user.createdAt).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</span>
                     </div>
                   </div>
                 </div>
@@ -258,34 +271,93 @@ export default function ProfilePage() {
                     <div className="group p-4 bg-gradient-to-r from-blue-50 to-cyan-50 rounded-xl border-2 border-blue-100 hover:border-blue-300 transition-all duration-300 cursor-pointer hover:shadow-md">
                       <div className="flex items-center justify-between mb-2">
                         <div className="flex items-center gap-2">
-                          <BookOpen className="w-5 h-5 text-blue-600 group-hover:animate-bounce" />
-                          <span className="text-sm font-semibold text-gray-700">Courses Completed</span>
+                          <Award className="w-5 h-5 text-blue-600 group-hover:animate-bounce" />
+                          <span className="text-sm font-semibold text-gray-700">Level</span>
                         </div>
                       </div>
-                      <div className="text-3xl font-bold text-blue-600">{stats.coursesCompleted}</div>
+                      <div className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">Level {user.level || 1}</div>
+                      <div className="text-xs text-gray-500 mt-1">{user.xp || 0} XP Total</div>
+                    </div>
+                    
+                    <div className="group p-4 bg-gradient-to-r from-yellow-50 to-orange-50 rounded-xl border-2 border-yellow-100 hover:border-yellow-300 transition-all duration-300 cursor-pointer hover:shadow-md">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <Star className="w-5 h-5 text-yellow-600 group-hover:animate-bounce" />
+                          <span className="text-sm font-semibold text-gray-700">Badges Earned</span>
+                        </div>
+                      </div>
+                      <div className="text-3xl font-bold text-yellow-600">{(user.badges || []).length}</div>
                     </div>
                     
                     <div className="group p-4 bg-gradient-to-r from-purple-50 to-pink-50 rounded-xl border-2 border-purple-100 hover:border-purple-300 transition-all duration-300 cursor-pointer hover:shadow-md">
                       <div className="flex items-center justify-between mb-2">
                         <div className="flex items-center gap-2">
-                          <Target className="w-5 h-5 text-purple-600 group-hover:animate-bounce" />
-                          <span className="text-sm font-semibold text-gray-700">XP Points</span>
+                          <BookOpen className="w-5 h-5 text-purple-600 group-hover:animate-bounce" />
+                          <span className="text-sm font-semibold text-gray-700">Tracks Completed</span>
                         </div>
                       </div>
-                      <div className="text-3xl font-bold text-purple-600">{stats.xpEarned}</div>
+                      <div className="text-3xl font-bold text-purple-600">{progressSummary?.completedTracks || 0}</div>
                     </div>
-                    
+
                     <div className="group p-4 bg-gradient-to-r from-green-50 to-emerald-50 rounded-xl border-2 border-green-100 hover:border-green-300 transition-all duration-300 cursor-pointer hover:shadow-md">
                       <div className="flex items-center justify-between mb-2">
                         <div className="flex items-center gap-2">
-                          <Award className="w-5 h-5 text-green-600 group-hover:animate-bounce" />
-                          <span className="text-sm font-semibold text-gray-700">Badges Earned</span>
+                          <Target className="w-5 h-5 text-green-600 group-hover:animate-bounce" />
+                          <span className="text-sm font-semibold text-gray-700">Modules Completed</span>
                         </div>
                       </div>
-                      <div className="text-3xl font-bold text-green-600">{stats.badgesUnlocked}</div>
+                      <div className="text-3xl font-bold text-green-600">{progressSummary?.completedModules || 0}</div>
                     </div>
                   </div>
                 </div>
+
+                {/* XP Progress Bar */}
+                <div className="bg-white rounded-3xl p-6 shadow-xl border-2 border-gray-100">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-sm font-bold text-gray-700">Level Progress</h3>
+                    <span className="text-xs text-gray-600">{500 - ((user.xp || 0) % 500)} XP to Level {(user.level || 1) + 1}</span>
+                  </div>
+                  <div className="bg-gray-200 rounded-full h-3 overflow-hidden">
+                    <div 
+                      className="bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 h-full transition-all duration-500 flex items-center justify-end pr-2"
+                      style={{ width: `${((user.xp || 0) % 500) / 500 * 100}%` }}
+                    >
+                      {((user.xp || 0) % 500) / 500 * 100 > 15 && (
+                        <span className="text-xs text-white font-bold">{Math.round(((user.xp || 0) % 500) / 500 * 100)}%</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Badge Showcase */}
+                {(user.badges || []).length > 0 && (
+                  <div className="bg-white rounded-3xl p-6 shadow-xl border-2 border-gray-100">
+                    <div className="flex items-center gap-2 mb-4">
+                      <Award className="w-5 h-5 text-yellow-600" />
+                      <h3 className="font-bold text-gray-900">Badge Collection</h3>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      {(user.badges || []).slice(0, 6).map((badgeKey: string) => {
+                        const badge = badgeDefinitions[badgeKey];
+                        return (
+                          <div
+                            key={badgeKey}
+                            className="bg-gradient-to-br from-yellow-50 to-orange-50 border-2 border-yellow-200 rounded-xl p-3 hover:scale-105 hover:shadow-lg transition-all duration-200 cursor-pointer text-center"
+                            title={badge?.description || ''}
+                          >
+                            <div className="text-3xl mb-1">{badge?.icon || '🏅'}</div>
+                            <div className="font-bold text-gray-800 text-xs">{badge?.name || badgeKey}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {(user.badges || []).length > 6 && (
+                      <div className="text-center mt-3">
+                        <span className="text-xs text-gray-500 font-medium">+{(user.badges || []).length - 6} more badges</span>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Enhanced Main Content */}
@@ -411,20 +483,13 @@ export default function ProfilePage() {
                         </div>
                         Current Role
                       </label>
-                      {editing ? (
-                        <input
-                          type="text"
-                          name="role"
-                          value={form.role}
-                          onChange={handleChange}
-                          className="w-full px-5 py-4 border-2 border-gray-200 rounded-xl focus:border-blue-400 focus:outline-none transition-all duration-300 font-medium hover:border-gray-300"
-                          placeholder="e.g., Student, Developer, Career Switcher"
-                        />
-                      ) : (
-                        <div className="px-5 py-4 bg-gray-50 rounded-xl text-gray-900 font-semibold capitalize border-2 border-gray-100">
-                          {user.role || 'Not set'}
-                        </div>
-                      )}
+                      <div className="px-5 py-4 bg-gradient-to-r from-gray-50 to-orange-50 rounded-xl text-gray-900 font-semibold flex items-center justify-between border-2 border-gray-100 capitalize">
+                        {user.role || 'Not set'}
+                        <span className="flex items-center gap-1 text-xs text-gray-500 bg-gray-200 px-3 py-1.5 rounded-full font-bold">
+                          <Shield className="w-3 h-3" />
+                          Protected
+                        </span>
+                      </div>
                     </div>
 
                     {/* Bio */}

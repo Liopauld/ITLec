@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
-import { ArrowLeft, MapPin, Github, Linkedin, Mail, User, Award, BookOpen, Users, MessageSquare } from 'lucide-react';
+import { ArrowLeft, MapPin, Github, Linkedin, Mail, User, Award, BookOpen, Users, MessageSquare, X, Copy, Check } from 'lucide-react';
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -10,8 +10,19 @@ export default function ProfilePage() {
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [progressSummary, setProgressSummary] = useState<{ completedTracks: number; completedModules: number } | null>(null);
+  const [badgeDefinitions, setBadgeDefinitions] = useState<any>({});
+  const [showEmailModal, setShowEmailModal] = useState(false);
+  const [emailCopied, setEmailCopied] = useState(false);
 
   const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:4000';
+
+  const copyEmail = () => {
+    if (profile?.email) {
+      navigator.clipboard.writeText(profile.email);
+      setEmailCopied(true);
+      setTimeout(() => setEmailCopied(false), 2000);
+    }
+  };
 
   useEffect(() => {
     const userStr = localStorage.getItem('user');
@@ -20,6 +31,12 @@ export default function ProfilePage() {
     } else {
       router.replace('/login');
     }
+    
+    // Fetch badge definitions
+    fetch(`${API_BASE}/badges`)
+      .then(res => res.json())
+      .then(data => setBadgeDefinitions(data.badges || {}))
+      .catch(() => {});
   }, [router]);
 
   useEffect(() => {
@@ -122,10 +139,13 @@ export default function ProfilePage() {
                       <span>GitHub</span>
                     </a>
                   )}
-                  <a href={`mailto:${profile.email}`} className="flex items-center gap-2 text-blue-600 hover:text-blue-700 transition-colors">
+                  <button 
+                    onClick={() => setShowEmailModal(true)}
+                    className="flex items-center gap-2 text-blue-600 hover:text-blue-700 transition-colors"
+                  >
                     <Mail className="w-5 h-5" />
                     <span>Email</span>
-                  </a>
+                  </button>
                 </div>
 
                 {/* Bio */}
@@ -133,18 +153,90 @@ export default function ProfilePage() {
                   <p className="text-gray-700 leading-relaxed">{profile.bio}</p>
                 )}
               </div>
+            </div>
+          </div>
 
-              {/* Connect Button */}
-              <div className="md:ml-auto">
-                <button className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white px-6 py-3 rounded-xl font-semibold transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 flex items-center gap-2">
-                  <MessageSquare className="w-5 h-5" />
-                  Connect
-                </button>
+          {/* Profile Stats */}
+          <div className="grid md:grid-cols-4 gap-6 mb-8">
+            <div className="bg-white rounded-xl p-6 shadow-md border border-gray-100 text-center transform hover:scale-105 transition-transform duration-200">
+              <div className="bg-gradient-to-r from-blue-100 to-purple-100 w-12 h-12 rounded-lg flex items-center justify-center mx-auto mb-3">
+                <Award className="w-6 h-6 text-blue-600" />
+              </div>
+              <div className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">Level {profile.level || 1}</div>
+              <div className="text-sm text-gray-600 mb-2">Current Level</div>
+              <div className="text-xs text-gray-500">{profile.xp || 0} XP</div>
+            </div>
+
+            <div className="bg-white rounded-xl p-6 shadow-md border border-gray-100 text-center transform hover:scale-105 transition-transform duration-200">
+              <div className="bg-yellow-100 w-12 h-12 rounded-lg flex items-center justify-center mx-auto mb-3">
+                <Award className="w-6 h-6 text-yellow-600" />
+              </div>
+              <div className="text-2xl font-bold text-gray-900">{(profile.badges || []).length}</div>
+              <div className="text-sm text-gray-600">Badges Earned</div>
+            </div>
+
+            <div className="bg-white rounded-xl p-6 shadow-md border border-gray-100 text-center transform hover:scale-105 transition-transform duration-200">
+              <div className="bg-blue-100 w-12 h-12 rounded-lg flex items-center justify-center mx-auto mb-3">
+                <BookOpen className="w-6 h-6 text-blue-600" />
+              </div>
+              <div className="text-2xl font-bold text-gray-900">{progressSummary ? progressSummary.completedTracks : 0}</div>
+              <div className="text-sm text-gray-600">Tracks Completed</div>
+            </div>
+
+            <div className="bg-white rounded-xl p-6 shadow-md border border-gray-100 text-center transform hover:scale-105 transition-transform duration-200">
+              <div className="bg-green-100 w-12 h-12 rounded-lg flex items-center justify-center mx-auto mb-3">
+                <BookOpen className="w-6 h-6 text-green-600" />
+              </div>
+              <div className="text-2xl font-bold text-gray-900">{progressSummary ? progressSummary.completedModules : 0}</div>
+              <div className="text-sm text-gray-600">Modules Completed</div>
+            </div>
+          </div>
+
+          {/* XP Progress Bar */}
+          <div className="bg-white rounded-xl p-6 shadow-md border border-gray-100 mb-8">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-lg font-bold text-gray-900">Level Progress</h3>
+              <span className="text-sm text-gray-600">{500 - ((profile.xp || 0) % 500)} XP to Level {(profile.level || 1) + 1}</span>
+            </div>
+            <div className="bg-gray-200 rounded-full h-4 overflow-hidden">
+              <div 
+                className="bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 h-full transition-all duration-500 flex items-center justify-end pr-2"
+                style={{ width: `${((profile.xp || 0) % 500) / 500 * 100}%` }}
+              >
+                {((profile.xp || 0) % 500) / 500 * 100 > 10 && (
+                  <span className="text-xs text-white font-bold">{Math.round(((profile.xp || 0) % 500) / 500 * 100)}%</span>
+                )}
               </div>
             </div>
           </div>
 
-          {/* Profile Stats (Placeholder for now) */}
+          {/* Badges Collection */}
+          {(profile.badges || []).length > 0 && (
+            <div className="bg-white rounded-xl p-6 shadow-md border border-gray-100 mb-8">
+              <div className="flex items-center gap-2 mb-6">
+                <Award className="w-6 h-6 text-yellow-600" />
+                <h2 className="text-2xl font-bold text-gray-900">Badge Collection</h2>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                {(profile.badges || []).map((badgeKey: string) => {
+                  const badge = badgeDefinitions[badgeKey];
+                  return (
+                    <div
+                      key={badgeKey}
+                      className="bg-gradient-to-br from-yellow-50 to-orange-50 border-2 border-yellow-200 rounded-xl p-4 hover:scale-105 hover:shadow-lg transition-all duration-200 cursor-pointer text-center"
+                    >
+                      <div className="text-4xl mb-2">{badge?.icon || '🏅'}</div>
+                      <div className="font-bold text-gray-800 text-sm mb-1">{badge?.name || badgeKey}</div>
+                      <div className="text-xs text-gray-600">{badge?.description || ''}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Profile Stats (Placeholder for now) - OLD CODE HIDDEN */}
+          <div className="hidden">
           <div className="grid md:grid-cols-3 gap-6 mb-8">
             <div className="bg-white rounded-xl p-6 shadow-md border border-gray-100 text-center">
               <div className="bg-blue-100 w-12 h-12 rounded-lg flex items-center justify-center mx-auto mb-3">
@@ -170,6 +262,7 @@ export default function ProfilePage() {
               <div className="text-sm text-gray-600">Connections</div>
             </div>
           </div>
+          </div>
 
           {/* Placeholder for Recent Activity or Tracks */}
           <div className="bg-white rounded-2xl p-6 shadow-lg border border-gray-100">
@@ -177,6 +270,56 @@ export default function ProfilePage() {
             <p className="text-gray-600">No recent activity to show.</p>
           </div>
         </div>
+
+        {/* Email Modal */}
+        {showEmailModal && (
+          <div 
+            className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 animate-fadeIn"
+            onClick={() => setShowEmailModal(false)}
+          >
+            <div 
+              className="bg-white rounded-2xl p-8 max-w-md w-full shadow-2xl transform animate-scaleIn"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-3">
+                  <div className="bg-gradient-to-r from-blue-500 to-purple-500 w-12 h-12 rounded-xl flex items-center justify-center">
+                    <Mail className="w-6 h-6 text-white" />
+                  </div>
+                  <h3 className="text-2xl font-bold text-gray-900">Email Address</h3>
+                </div>
+                <button
+                  onClick={() => setShowEmailModal(false)}
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              <div className="bg-gradient-to-r from-blue-50 to-purple-50 rounded-xl p-4 mb-6 border-2 border-blue-100">
+                <p className="text-sm text-gray-600 mb-2 font-medium">Contact {profile?.name} at:</p>
+                <p className="text-xl font-bold text-gray-900 break-all">{profile?.email}</p>
+              </div>
+
+              <button
+                onClick={copyEmail}
+                className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white px-6 py-3 rounded-xl font-semibold transition-all duration-300 shadow-md hover:shadow-lg flex items-center justify-center gap-2"
+              >
+                {emailCopied ? (
+                  <>
+                    <Check className="w-5 h-5" />
+                    Copied!
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-5 h-5" />
+                    Copy Email
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        )}
       </main>
     </>
   );

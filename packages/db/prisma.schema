@@ -1,0 +1,168 @@
+// Prisma schema for ITPathfinder MVP
+// Database: PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  password     String
+  role         String
+  bio          String?
+  skillsVector Json?
+  xp           Int      @default(0)
+  reputation   Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  profiles     Profile[]
+  assessments  Assessment[]
+  submissions  Submission[]
+  badges       Badge[]
+  certificates Certificate[]
+  posts        Post[]
+  comments     Comment[]
+  mentor       Mentor?
+}
+
+model Profile {
+  id        String   @id @default(uuid())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  education String?
+  location  String?
+  github    String?
+  linkedin  String?
+}
+
+model Assessment {
+  id         String   @id @default(uuid())
+  user       User     @relation(fields: [userId], references: [id])
+  userId     String
+  createdAt  DateTime @default(now())
+  scoreVector Json
+  rawAnswers Json
+}
+
+model Question {
+  id       String   @id @default(uuid())
+  stem     String
+  type     String
+  tags     String[]
+  options  Json
+  correct  Json?
+  weight   Float
+}
+
+model Track {
+  id          String   @id @default(uuid())
+  title       String
+  description String
+  difficulty  String
+  modules     Module[]
+}
+
+model Module {
+  id        String   @id @default(uuid())
+  track     Track    @relation(fields: [trackId], references: [id])
+  trackId   String
+  type      String
+  content   Json
+  order     Int
+  lessons   Lesson[]
+  quizzes   Quiz[]
+}
+
+model Lesson {
+  id        String   @id @default(uuid())
+  module    Module   @relation(fields: [moduleId], references: [id])
+  moduleId  String
+  content   Json
+  assets    Json?
+}
+
+model Quiz {
+  id        String   @id @default(uuid())
+  module    Module   @relation(fields: [moduleId], references: [id])
+  moduleId  String
+  questions Question[]
+}
+
+model Submission {
+  id         String   @id @default(uuid())
+  user       User     @relation(fields: [userId], references: [id])
+  userId     String
+  exerciseId String
+  status     String
+  score      Float
+  feedback   String?
+}
+
+model Badge {
+  id       String   @id @default(uuid())
+  name     String
+  criteria String
+  users    User[]
+}
+
+model Certificate {
+  id         String   @id @default(uuid())
+  user       User     @relation(fields: [userId], references: [id])
+  userId     String
+  track      Track    @relation(fields: [trackId], references: [id])
+  trackId    String
+  issueDate  DateTime @default(now())
+  certCode   String   @unique
+}
+
+model Post {
+  id        String   @id @default(uuid())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  content   String
+  tags      String[]
+  comments  Comment[]
+}
+
+model Comment {
+  id      String   @id @default(uuid())
+  post    Post     @relation(fields: [postId], references: [id])
+  postId  String
+  user    User     @relation(fields: [userId], references: [id])
+  userId  String
+  content String
+}
+
+model Mentor {
+  id          String   @id @default(uuid())
+  user        User     @relation(fields: [userId], references: [id])
+  userId      String   @unique
+  rate        Float?
+  skills      String[]
+  availability Json?
+}
+
+model JobListing {
+  id            String   @id @default(uuid())
+  source        String
+  title         String
+  skillsRequired String[]
+  location      String
+  salaryRange   String
+}
+
+model Event {
+  id        String   @id @default(uuid())
+  type      String
+  title     String
+  startTime DateTime
+  endTime   DateTime
+  details   Json
+}

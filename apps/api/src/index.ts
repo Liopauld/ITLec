@@ -12,6 +12,8 @@ import fetch from 'node-fetch';
 import cloudinary from 'cloudinary';
 import multer from 'multer';
 import { CloudinaryStorage } from 'multer-storage-cloudinary';
+import nodemailer from 'nodemailer';
+import crypto from 'crypto';
 
 
 // Only keep one set of declarations and endpoints
@@ -23,6 +25,125 @@ app.use(express.json());
 // Recreate Prisma Client to refresh TypeScript types
 const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET || 'changeme';
+
+// Email transporter configuration
+const emailTransporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST || 'smtp.gmail.com',
+  port: parseInt(process.env.SMTP_PORT || '587'),
+  secure: process.env.SMTP_SECURE === 'true', // true for 465, false for other ports
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS
+  }
+});
+
+// Verify email configuration on startup
+emailTransporter.verify((error, success) => {
+  if (error) {
+    console.error('Email configuration error:', error);
+  } else {
+    console.log('Email server ready to send messages');
+  }
+});
+
+// Helper function to check for calendar conflicts
+async function checkCalendarConflicts(
+  userId: string,
+  startTime: Date,
+  endTime: Date
+): Promise<{ hasConflict: boolean; conflictDetails?: string }> {
+  try {
+    // Check PersonalCalendarEvent for conflicts
+    const calendarConflicts = await prisma.personalCalendarEvent.findMany({
+      where: {
+        userId: userId,
+        OR: [
+          // New event starts during existing event
+          {
+            AND: [
+              { startTime: { lte: startTime } },
+              { endTime: { gt: startTime } }
+            ]
+          },
+          // New event ends during existing event
+          {
+            AND: [
+              { startTime: { lt: endTime } },
+              { endTime: { gte: endTime } }
+            ]
+          },
+          // New event completely contains existing event
+          {
+            AND: [
+              { startTime: { gte: startTime } },
+              { endTime: { lte: endTime } }
+            ]
+          }
+        ]
+      }
+    });
+
+    if (calendarConflicts.length > 0) {
+      const conflict = calendarConflicts[0];
+      const conflictType = conflict.type === 'personal' ? 'blocked time' : 
+                          conflict.type === 'session' ? 'session' : 'event';
+      return {
+        hasConflict: true,
+        conflictDetails: `You have an existing ${conflictType} "${conflict.title}" from ${conflict.startTime.toLocaleString()} to ${conflict.endTime.toLocaleString()}`
+      };
+    }
+
+    // Check Session table for conflicts (where user is mentor or student)
+    const sessionConflicts = await prisma.session.findMany({
+      where: {
+        AND: [
+          {
+            OR: [
+              { mentorId: userId },
+              { studentId: userId }
+            ]
+          },
+          { status: 'scheduled' },
+          {
+            OR: [
+              {
+                AND: [
+                  { startTime: { lte: startTime } },
+                  { endTime: { gt: startTime } }
+                ]
+              },
+              {
+                AND: [
+                  { startTime: { lt: endTime } },
+                  { endTime: { gte: endTime } }
+                ]
+              },
+              {
+                AND: [
+                  { startTime: { gte: startTime } },
+                  { endTime: { lte: endTime } }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    });
+
+    if (sessionConflicts.length > 0) {
+      const conflict = sessionConflicts[0];
+      return {
+        hasConflict: true,
+        conflictDetails: `You have an existing session "${conflict.title}" from ${conflict.startTime.toLocaleString()} to ${conflict.endTime.toLocaleString()}`
+      };
+    }
+
+    return { hasConflict: false };
+  } catch (error) {
+    console.error('Error checking calendar conflicts:', error);
+    throw error;
+  }
+}
 
 // Simple JWT auth middleware (expects Authorization: Bearer <token>)
 declare global {
@@ -46,6 +167,195 @@ const requireAuth = (req: express.Request, res: express.Response, next: express.
   }
 };
 
+// ============================================
+// XP AND BADGE SYSTEM
+// ============================================
+
+// XP Reward amounts
+const XP_REWARDS = {
+  MODULE_COMPLETE: 50,
+  GAME_BRONZE: 15,        // 70-79%
+  GAME_SILVER: 25,        // 80-89%
+  GAME_GOLD: 50,          // 90-100%
+  TRACK_BEGINNER: 100,
+  TRACK_INTERMEDIATE: 200,
+  TRACK_ADVANCED: 300,
+  CERTIFICATE: 500,
+  COMMUNITY_POST: 5,
+  COMMUNITY_COMMENT: 2,
+  COMMUNITY_LIKE: 1
+};
+
+// Badge definitions
+const BADGE_DEFINITIONS = {
+  first_steps: { name: 'First Steps', description: 'Complete your first module', icon: '👣' },
+  code_warrior: { name: 'Code Warrior', description: 'Complete 5 coding challenges', icon: '⚔️' },
+  perfect_score: { name: 'Perfect Score', description: 'Score 100% on any game', icon: '💯' },
+  dedicated_learner: { name: 'Dedicated Learner', description: 'Complete 10 modules', icon: '📚' },
+  track_champion: { name: 'Track Champion', description: 'Complete an advanced track', icon: '🏆' },
+  certified: { name: 'Certified Professional', description: 'Earn your first certificate', icon: '🎓' },
+  beginner_master: { name: 'Beginner Master', description: 'Complete 3 beginner tracks', icon: '🌱' },
+  intermediate_master: { name: 'Intermediate Master', description: 'Complete 3 intermediate tracks', icon: '🔥' },
+  advanced_master: { name: 'Advanced Master', description: 'Complete 3 advanced tracks', icon: '⚡' },
+  community_helper: { name: 'Community Helper', description: 'Make 10 community posts', icon: '💬' },
+  game_master: { name: 'Game Master', description: 'Complete 20 games', icon: '🎮' },
+  high_achiever: { name: 'High Achiever', description: 'Reach level 10', icon: '🌟' },
+  elite_learner: { name: 'Elite Learner', description: 'Reach level 25', icon: '👑' }
+};
+
+// Calculate level from XP (500 XP per level)
+const calculateLevel = (xp: number): number => {
+  return Math.floor(xp / 500) + 1;
+};
+
+// Calculate XP needed for next level
+const xpToNextLevel = (currentXp: number): number => {
+  const currentLevel = calculateLevel(currentXp);
+  const nextLevelXp = currentLevel * 500;
+  return nextLevelXp - currentXp;
+};
+
+// Award XP to user and handle level ups
+async function awardXP(userId: string, amount: number, reason: string = '') {
+  try {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) return null;
+
+    const oldXp = user.xp || 0;
+    const newXp = oldXp + amount;
+    const oldLevel = calculateLevel(oldXp);
+    const newLevel = calculateLevel(newXp);
+
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data: { xp: newXp, level: newLevel }
+    });
+
+    // Check for level-based badges
+    if (newLevel >= 10 && !user.badges.includes('high_achiever')) {
+      await awardBadge(userId, 'high_achiever');
+    }
+    if (newLevel >= 25 && !user.badges.includes('elite_learner')) {
+      await awardBadge(userId, 'elite_learner');
+    }
+
+    console.log(`✨ Awarded ${amount} XP to user ${userId} for: ${reason}. Total: ${newXp} XP, Level: ${newLevel}`);
+    
+    return { 
+      xpAwarded: amount, 
+      totalXp: newXp, 
+      leveledUp: newLevel > oldLevel, 
+      oldLevel, 
+      newLevel 
+    };
+  } catch (err) {
+    console.error('Error awarding XP:', err);
+    return null;
+  }
+}
+
+// Award badge to user
+async function awardBadge(userId: string, badgeKey: string) {
+  try {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) return false;
+    
+    if (user.badges.includes(badgeKey)) {
+      return false; // Already has this badge
+    }
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: { badges: [...user.badges, badgeKey] }
+    });
+
+    const badgeInfo = BADGE_DEFINITIONS[badgeKey as keyof typeof BADGE_DEFINITIONS];
+    console.log(`🏅 Awarded badge "${badgeInfo?.name || badgeKey}" to user ${userId}`);
+    
+    return true;
+  } catch (err) {
+    console.error('Error awarding badge:', err);
+    return false;
+  }
+}
+
+// Check and award badges based on user stats
+async function checkAndAwardBadges(userId: string) {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        trackProgresses: {
+          include: {
+            track: true
+          }
+        },
+        posts: true
+      }
+    });
+
+    if (!user) return;
+
+    const userBadges = user.badges as string[];
+
+    // Count completions
+    const completedTracks = user.trackProgresses.filter(tp => {
+      const track = tp.track as any;
+      const modulesCount = track.modules?.length || 0;
+      const completedCount = tp.completedModules.length;
+      return modulesCount > 0 && completedCount >= modulesCount;
+    });
+
+    const beginnerCompleted = completedTracks.filter(tp => 
+      tp.track.difficulty?.toLowerCase() === 'beginner'
+    ).length;
+    const intermediateCompleted = completedTracks.filter(tp => 
+      tp.track.difficulty?.toLowerCase() === 'intermediate'
+    ).length;
+    const advancedCompleted = completedTracks.filter(tp => 
+      tp.track.difficulty?.toLowerCase() === 'advanced'
+    ).length;
+
+    // Count total completed modules across all tracks
+    const totalModulesCompleted = user.trackProgresses.reduce((sum, tp) => 
+      sum + tp.completedModules.length, 0
+    );
+
+    // Count total completed games across all tracks
+    const totalGamesCompleted = user.trackProgresses.reduce((sum, tp) => 
+      sum + tp.completedGames.length, 0
+    );
+
+    // Award badges based on achievements
+    if (totalModulesCompleted >= 1 && !userBadges.includes('first_steps')) {
+      await awardBadge(userId, 'first_steps');
+    }
+    if (totalModulesCompleted >= 10 && !userBadges.includes('dedicated_learner')) {
+      await awardBadge(userId, 'dedicated_learner');
+    }
+    if (totalGamesCompleted >= 20 && !userBadges.includes('game_master')) {
+      await awardBadge(userId, 'game_master');
+    }
+    if (beginnerCompleted >= 3 && !userBadges.includes('beginner_master')) {
+      await awardBadge(userId, 'beginner_master');
+    }
+    if (intermediateCompleted >= 3 && !userBadges.includes('intermediate_master')) {
+      await awardBadge(userId, 'intermediate_master');
+    }
+    if (advancedCompleted >= 3 && !userBadges.includes('advanced_master')) {
+      await awardBadge(userId, 'advanced_master');
+    }
+    if (advancedCompleted >= 1 && !userBadges.includes('track_champion')) {
+      await awardBadge(userId, 'track_champion');
+    }
+    if (user.posts.length >= 10 && !userBadges.includes('community_helper')) {
+      await awardBadge(userId, 'community_helper');
+    }
+  } catch (err) {
+    console.error('Error checking badges:', err);
+  }
+}
+
 app.get('/', (req, res) => {
   res.json({ message: 'ITPathfinder API is running!' });
 });
@@ -56,7 +366,7 @@ app.post('/auth/signup', async (req, res) => {
   if (!name || !email || !password || !role) {
     return res.status(400).json({ error: 'Missing fields' });
   }
-  const validRoles = ['student', 'IT Professional', 'career_switcher'];
+  const validRoles = ['student', 'IT Professional'];
   // Accept 'professional' from frontend and map to 'IT Professional'
   let userRole = role;
   if (role === 'professional') userRole = 'IT Professional';
@@ -67,12 +377,66 @@ app.post('/auth/signup', async (req, res) => {
   if (existing) {
     return res.status(409).json({ error: 'Email already registered' });
   }
+  
+  // Generate verification token
+  const verificationToken = crypto.randomBytes(32).toString('hex');
+  const verificationTokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+  
   const hashed = await bcrypt.hash(password, 10);
   const user = await prisma.user.create({
-    data: { name, email, password: hashed, role: userRole }
+    data: { 
+      name, 
+      email, 
+      password: hashed, 
+      role: userRole,
+      emailVerified: false,
+      verificationToken,
+      verificationTokenExpiry
+    }
   });
-  const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
-  res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+  
+  // Send verification email
+  try {
+    const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/verify-email?token=${verificationToken}`;
+    
+    await emailTransporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      to: email,
+      subject: 'Verify Your Email - ITPathfinder',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #4F46E5;">Welcome to ITPathfinder, ${name}!</h2>
+          <p>Thank you for signing up. Please verify your email address to complete your registration.</p>
+          <div style="margin: 30px 0;">
+            <a href="${verificationUrl}" 
+               style="background: linear-gradient(to right, #4F46E5, #7C3AED); 
+                      color: white; 
+                      padding: 12px 30px; 
+                      text-decoration: none; 
+                      border-radius: 8px;
+                      display: inline-block;">
+              Verify Email Address
+            </a>
+          </div>
+          <p style="color: #666;">Or copy and paste this link into your browser:</p>
+          <p style="color: #4F46E5; word-break: break-all;">${verificationUrl}</p>
+          <p style="color: #666; font-size: 14px;">This link will expire in 24 hours.</p>
+          <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;">
+          <p style="color: #999; font-size: 12px;">If you didn't create an account, please ignore this email.</p>
+        </div>
+      `
+    });
+    
+    console.log(`Verification email sent to ${email}`);
+  } catch (emailError) {
+    console.error('Failed to send verification email:', emailError);
+    // Continue with signup even if email fails
+  }
+  
+  res.json({ 
+    message: 'Registration successful! Please check your email to verify your account.',
+    user: { id: user.id, name: user.name, email: user.email, role: user.role, emailVerified: false }
+  });
 });
 
 // User login endpoint
@@ -85,12 +449,141 @@ app.post('/auth/login', async (req, res) => {
   if (!user) {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
+  
+  // Check if email is verified
+  if (!user.emailVerified) {
+    return res.status(403).json({ 
+      error: 'Email not verified', 
+      message: 'Please verify your email address before logging in. Check your inbox for the verification link.',
+      needsVerification: true
+    });
+  }
+  
   const valid = await bcrypt.compare(password, user.password);
   if (!valid) {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
   const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
   res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+});
+
+// Email verification endpoint
+app.get('/auth/verify-email', async (req, res) => {
+  const { token } = req.query;
+  
+  if (!token || typeof token !== 'string') {
+    return res.status(400).json({ error: 'Invalid verification token' });
+  }
+  
+  try {
+    const user = await prisma.user.findFirst({
+      where: {
+        verificationToken: token,
+        verificationTokenExpiry: {
+          gte: new Date() // Token not expired
+        }
+      }
+    });
+    
+    if (!user) {
+      return res.status(400).json({ 
+        error: 'Invalid or expired verification token',
+        message: 'The verification link is invalid or has expired. Please request a new verification email.'
+      });
+    }
+    
+    // Update user as verified
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        emailVerified: true,
+        verificationToken: null,
+        verificationTokenExpiry: null
+      }
+    });
+    
+    res.json({ 
+      success: true,
+      message: 'Email verified successfully! You can now log in to your account.',
+      user: { id: user.id, name: user.name, email: user.email, role: user.role }
+    });
+  } catch (err) {
+    console.error('Email verification error:', err);
+    res.status(500).json({ error: 'Failed to verify email' });
+  }
+});
+
+// Resend verification email
+app.post('/auth/resend-verification', async (req, res) => {
+  const { email } = req.body;
+  
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required' });
+  }
+  
+  try {
+    const user = await prisma.user.findUnique({ where: { email } });
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    if (user.emailVerified) {
+      return res.status(400).json({ error: 'Email already verified' });
+    }
+    
+    // Generate new verification token
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    const verificationTokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+    
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        verificationToken,
+        verificationTokenExpiry
+      }
+    });
+    
+    // Send verification email
+    const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/verify-email?token=${verificationToken}`;
+    
+    await emailTransporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      to: email,
+      subject: 'Verify Your Email - ITPathfinder',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #4F46E5;">Email Verification - ITPathfinder</h2>
+          <p>Hi ${user.name},</p>
+          <p>Please verify your email address to complete your registration.</p>
+          <div style="margin: 30px 0;">
+            <a href="${verificationUrl}" 
+               style="background: linear-gradient(to right, #4F46E5, #7C3AED); 
+                      color: white; 
+                      padding: 12px 30px; 
+                      text-decoration: none; 
+                      border-radius: 8px;
+                      display: inline-block;">
+              Verify Email Address
+            </a>
+          </div>
+          <p style="color: #666;">Or copy and paste this link into your browser:</p>
+          <p style="color: #4F46E5; word-break: break-all;">${verificationUrl}</p>
+          <p style="color: #666; font-size: 14px;">This link will expire in 24 hours.</p>
+          <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;">
+          <p style="color: #999; font-size: 12px;">If you didn't request this email, please ignore it.</p>
+        </div>
+      `
+    });
+    
+    res.json({ 
+      success: true,
+      message: 'Verification email sent! Please check your inbox.'
+    });
+  } catch (err) {
+    console.error('Resend verification error:', err);
+    res.status(500).json({ error: 'Failed to send verification email' });
+  }
 });
 
 // Start assessment: fetch random questions
@@ -131,15 +624,163 @@ app.post('/assessments/submit', async (req, res) => {
     // Assess strengths/weaknesses
     const strengths = Object.entries(scoreVector).filter(([_, score]) => score >= 70).map(([tag]) => tag);
     const weaknesses = Object.entries(scoreVector).filter(([_, score]) => score < 50).map(([tag]) => tag);
-    // Suggest tracks based on strengths
-    const tracks = await prisma.track.findMany();
-    const recommendedTracks = tracks.filter(track => {
+    
+    // Map assessment tags to track categories/keywords
+    const tagToTrackMapping: Record<string, string[]> = {
+      'computer_fundamentals': ['computer', 'fundamental', 'basic', 'introduction', 'beginner', 'it career'],
+      'programming_logic': ['programming', 'javascript', 'coding', 'algorithm', 'python', 'java', 'development', 'software'],
+      'math_logic': ['logic', 'problem solving', 'algorithm', 'puzzle', 'math', 'reasoning'],
+      'digital_literacy': ['digital', 'cybersecurity', 'security', 'literacy', 'cyber', 'threat', 'network security'],
+      'career_softskills': ['career', 'soft skill', 'professional', 'communication', 'teamwork', 'it career']
+    };
+    
+    // Suggest tracks based on strengths with intelligent matching
+    const tracks = await prisma.track.findMany({ include: { modules: true } });
+    
+    // Get user's completed tracks
+    const userProgress = await prisma.trackProgress.findMany({
+      where: { userId }
+    });
+    
+    // Identify completed tracks (100% progress)
+    const completedTrackIds = new Set<string>();
+    for (const progress of userProgress) {
+      const track = tracks.find(t => t.id === progress.trackId);
+      if (track) {
+        const totalModules = track.modules?.length || 0;
+        const completedModules = (progress.completedModules as string[]).length;
+        const progressPercent = totalModules > 0 ? Math.round((completedModules / totalModules) * 100) : 0;
+        
+        // Mark track as completed if 100% done
+        if (progressPercent === 100) {
+          completedTrackIds.add(track.id);
+        }
+      }
+    }
+    
+    // Filter out completed tracks
+    const availableTracks = tracks.filter(track => !completedTrackIds.has(track.id));
+    
+    const scoredTracks = availableTracks.map((track: any) => {
       const title = track.title.toLowerCase();
       const desc = (track.description || '').toLowerCase();
-      return strengths.some(skill => title.includes(skill) || desc.includes(skill));
+      const category = (track.category || '').toLowerCase();
+      const combined = `${title} ${desc} ${category}`;
+      
+      let relevanceScore = 0;
+      
+      // Score based on strengths (higher priority)
+      strengths.forEach(strength => {
+        const keywords = tagToTrackMapping[strength] || [];
+        keywords.forEach(keyword => {
+          if (combined.includes(keyword)) {
+            relevanceScore += 10;
+          }
+        });
+      });
+      
+      // Consider weaknesses for remedial tracks (lower priority)
+      weaknesses.forEach(weakness => {
+        const keywords = tagToTrackMapping[weakness] || [];
+        keywords.forEach(keyword => {
+          if (combined.includes(keyword) && (title.includes('fundamental') || title.includes('basic') || title.includes('beginner'))) {
+            relevanceScore += 3;
+          }
+        });
+      });
+      
+      return { track, relevanceScore };
     });
-    // Fallback: If no tracks matched, recommend top 3 tracks by order
-    const finalRecommended = recommendedTracks.length > 0 ? recommendedTracks.slice(0, 3) : tracks.slice(0, 3);
+    
+    // Calculate average score first (needed for debug log and recommendations)
+    const averageScore = Object.values(scoreVector).reduce((sum, score) => sum + score, 0) / Object.values(scoreVector).length;
+    
+    console.log('Assessment scoring debug:', {
+      userId,
+      strengths,
+      weaknesses,
+      averageScore,
+      topScoredTracks: scoredTracks
+        .sort((a, b) => b.relevanceScore - a.relevanceScore)
+        .slice(0, 5)
+        .map(item => ({ title: item.track.title, score: item.relevanceScore }))
+    });
+    
+    // Sort by relevance score and get top recommendations
+    const sortedTracks = scoredTracks
+      .sort((a, b) => b.relevanceScore - a.relevanceScore)
+      .map(item => item.track);
+    
+    // Also keep tracks with scores (for fallback)
+    const tracksWithScores = sortedTracks.filter((_, index) => scoredTracks[index].relevanceScore > 0);
+    
+    // Prioritize beginner tracks if user has low overall performance
+    let finalRecommended: any[] = [];
+    const MIN_RECOMMENDATIONS = 5; // Recommend at least 5 tracks
+    
+    if (averageScore < 50) {
+      // Low performance: prioritize beginner tracks
+      const beginnerTracks = (tracksWithScores.length > 0 ? tracksWithScores : sortedTracks).filter((t: any) => t.difficulty === 'Beginner' || t.difficulty === 'beginner');
+      finalRecommended = beginnerTracks.slice(0, MIN_RECOMMENDATIONS);
+      if (finalRecommended.length < MIN_RECOMMENDATIONS) {
+        // Fill with any available beginner tracks
+        const moreBeginner = sortedTracks.filter((t: any) => 
+          (t.difficulty === 'Beginner' || t.difficulty === 'beginner') && 
+          !finalRecommended.find((f: any) => f.id === t.id)
+        );
+        finalRecommended = [...finalRecommended, ...moreBeginner].slice(0, MIN_RECOMMENDATIONS);
+      }
+      // If still not enough, add intermediate tracks
+      if (finalRecommended.length < MIN_RECOMMENDATIONS) {
+        const intermediateTracks = sortedTracks.filter((t: any) => 
+          (t.difficulty === 'Intermediate' || t.difficulty === 'intermediate') &&
+          !finalRecommended.find((f: any) => f.id === t.id)
+        );
+        finalRecommended = [...finalRecommended, ...intermediateTracks].slice(0, MIN_RECOMMENDATIONS);
+      }
+    } else if (averageScore >= 70) {
+      // High performance: include intermediate/advanced tracks
+      const relevantTracks = tracksWithScores.length > 0 ? tracksWithScores : sortedTracks;
+      const advancedTracks = relevantTracks.filter((t: any) => 
+        t.difficulty === 'Intermediate' || t.difficulty === 'intermediate' || 
+        t.difficulty === 'Advanced' || t.difficulty === 'advanced'
+      );
+      const beginnerTracks = relevantTracks.filter((t: any) => 
+        t.difficulty === 'Beginner' || t.difficulty === 'beginner'
+      );
+      finalRecommended = [...beginnerTracks.slice(0, 2), ...advancedTracks.slice(0, 3)];
+      
+      // Ensure we have at least MIN_RECOMMENDATIONS
+      if (finalRecommended.length < MIN_RECOMMENDATIONS) {
+        const remaining = sortedTracks.filter((t: any) => 
+          !finalRecommended.find((f: any) => f.id === t.id)
+        );
+        finalRecommended = [...finalRecommended, ...remaining].slice(0, MIN_RECOMMENDATIONS);
+      }
+    } else {
+      // Medium performance: balanced mix
+      finalRecommended = (tracksWithScores.length > 0 ? tracksWithScores : sortedTracks).slice(0, MIN_RECOMMENDATIONS);
+    }
+    
+    // Fallback: If no tracks matched, recommend beginner tracks
+    if (finalRecommended.length === 0) {
+      const beginnerTracks = availableTracks.filter((t: any) => t.difficulty === 'Beginner' || t.difficulty === 'beginner');
+      finalRecommended = beginnerTracks.length > 0 ? beginnerTracks.slice(0, MIN_RECOMMENDATIONS) : availableTracks.slice(0, MIN_RECOMMENDATIONS);
+    }
+    
+    // Final guarantee: Ensure we always have at least MIN_RECOMMENDATIONS (or all available if less)
+    if (finalRecommended.length < MIN_RECOMMENDATIONS && finalRecommended.length < availableTracks.length) {
+      const remaining = availableTracks.filter((t: any) => 
+        !finalRecommended.find((f: any) => f.id === t.id)
+      );
+      finalRecommended = [...finalRecommended, ...remaining].slice(0, MIN_RECOMMENDATIONS);
+    }
+    
+    // If still no recommendations (all tracks completed), show a message
+    if (finalRecommended.length === 0) {
+      finalRecommended = [];
+      console.log(`User ${userId} has completed all available tracks!`);
+    }
     // Save assessment
     const assessment = await prisma.assessment.create({
       data: {
@@ -162,14 +803,153 @@ app.get('/assessments/latest/:userId', async (req, res) => {
   if (!userId) {
     return res.status(400).json({ error: 'Missing userId' });
   }
-  const assessment = await prisma.assessment.findFirst({
-    where: { userId },
-    orderBy: { createdAt: 'desc' }
-  });
-  if (!assessment) {
-    return res.status(404).json({ error: 'No assessment found' });
+  
+  try {
+    const assessment = await prisma.assessment.findFirst({
+      where: { userId },
+      orderBy: { createdAt: 'desc' }
+    });
+    
+    if (!assessment) {
+      return res.status(404).json({ error: 'No assessment found' });
+    }
+    
+    // Get current recommended tracks from assessment
+    let recommendedTracks = (assessment.recommendedTracks as any[]) || [];
+    
+    if (recommendedTracks.length > 0) {
+      // Fetch full track details with modules
+      const trackIds = recommendedTracks.map((t: any) => t.id).filter(Boolean);
+      const tracks = await prisma.track.findMany({
+        where: { id: { in: trackIds } },
+        include: { modules: true }
+      });
+      
+      // Get user's progress to identify completed tracks
+      const userProgress = await prisma.trackProgress.findMany({
+        where: { userId }
+      });
+      
+      // Identify completed tracks
+      const completedTrackIds = new Set<string>();
+      for (const progress of userProgress) {
+        const track = tracks.find(t => t.id === progress.trackId);
+        if (track) {
+          const totalModules = track.modules?.length || 0;
+          const completedModules = (progress.completedModules as string[]).length;
+          const progressPercent = totalModules > 0 ? Math.round((completedModules / totalModules) * 100) : 0;
+          
+          if (progressPercent === 100) {
+            completedTrackIds.add(track.id);
+          }
+        }
+      }
+      
+      // Filter out completed tracks
+      const availableRecommendedTracks = recommendedTracks.filter((t: any) => !completedTrackIds.has(t.id));
+      
+      // If some tracks were completed, replace them with new recommendations
+      if (availableRecommendedTracks.length < recommendedTracks.length) {
+        const numToReplace = recommendedTracks.length - availableRecommendedTracks.length;
+        
+        // Get all available tracks (not completed)
+        const allTracks = await prisma.track.findMany({ include: { modules: true } });
+        
+        // Check all tracks for completion
+        const allCompletedTrackIds = new Set<string>();
+        for (const progress of userProgress) {
+          const track = allTracks.find(t => t.id === progress.trackId);
+          if (track) {
+            const totalModules = track.modules?.length || 0;
+            const completedModules = (progress.completedModules as string[]).length;
+            const progressPercent = totalModules > 0 ? Math.round((completedModules / totalModules) * 100) : 0;
+            
+            if (progressPercent === 100) {
+              allCompletedTrackIds.add(track.id);
+            }
+          }
+        }
+        
+        // Get available tracks (not already recommended and not completed)
+        const alreadyRecommendedIds = new Set(availableRecommendedTracks.map((t: any) => t.id));
+        const availableTracks = allTracks.filter(track => 
+          !allCompletedTrackIds.has(track.id) && 
+          !alreadyRecommendedIds.has(track.id)
+        );
+        
+        // Use the same tag mapping logic from assessment submission to find relevant tracks
+        const scoreVector = assessment.scoreVector as Record<string, number>;
+        const strengths = Object.entries(scoreVector).filter(([_, score]) => score >= 70).map(([tag]) => tag);
+        
+        const tagToTrackMapping: Record<string, string[]> = {
+          'computer_fundamentals': ['computer', 'fundamental', 'basic', 'introduction', 'beginner', 'it career'],
+          'programming_logic': ['programming', 'javascript', 'coding', 'algorithm', 'python', 'java', 'development', 'software'],
+          'math_logic': ['logic', 'problem solving', 'algorithm', 'puzzle', 'math', 'reasoning'],
+          'digital_literacy': ['digital', 'cybersecurity', 'security', 'literacy', 'cyber', 'threat', 'network security'],
+          'career_softskills': ['career', 'soft skill', 'professional', 'communication', 'teamwork', 'it career']
+        };
+        
+        // Score available tracks
+        const scoredReplacements = availableTracks.map((track: any) => {
+          const title = track.title.toLowerCase();
+          const desc = (track.description || '').toLowerCase();
+          const category = (track.category || '').toLowerCase();
+          const combined = `${title} ${desc} ${category}`;
+          
+          let relevanceScore = 0;
+          
+          strengths.forEach(strength => {
+            const keywords = tagToTrackMapping[strength] || [];
+            keywords.forEach(keyword => {
+              if (combined.includes(keyword)) {
+                relevanceScore += 10;
+              }
+            });
+          });
+          
+          return { track, relevanceScore };
+        });
+        
+        // Sort by relevance and get top replacements
+        const replacementTracks = scoredReplacements
+          .sort((a, b) => b.relevanceScore - a.relevanceScore)
+          .slice(0, numToReplace)
+          .map(item => item.track);
+        
+        // If not enough relevant tracks, fill with any available tracks
+        if (replacementTracks.length < numToReplace) {
+          const additionalTracks = availableTracks
+            .filter(track => !replacementTracks.find(rt => rt.id === track.id))
+            .slice(0, numToReplace - replacementTracks.length);
+          replacementTracks.push(...additionalTracks);
+        }
+        
+        // Combine available recommended tracks with replacement tracks
+        recommendedTracks = [...availableRecommendedTracks, ...replacementTracks];
+        
+        console.log(`Replaced ${numToReplace} completed track(s) for user ${userId}. New total: ${recommendedTracks.length}`);
+        
+        // Update the assessment with new recommendations
+        await prisma.assessment.update({
+          where: { id: assessment.id },
+          data: { recommendedTracks }
+        });
+      } else {
+        // All recommended tracks are still available
+        recommendedTracks = availableRecommendedTracks;
+      }
+    }
+    
+    res.json({ 
+      assessment: {
+        ...assessment,
+        recommendedTracks
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching latest assessment:', err);
+    res.status(500).json({ error: 'Failed to fetch assessment' });
   }
-  res.json({ assessment });
 });
 // Get user info by ID
 app.get('/users/:id', async (req, res) => {
@@ -200,14 +980,14 @@ app.get('/users/:id/progress-summary', async (req, res) => {
     // Calculate completed tracks and modules
     let completedTracks = 0;
     let completedModules = 0;
-    const trackProgressMap = new Map(progresses.map(p => [p.trackId, p]));
+    const trackProgressMap = new Map(progresses.map((p: any) => [p.trackId, p]));
     for (const track of tracks) {
-      const progress = trackProgressMap.get(track.id);
+      const progress: any = trackProgressMap.get(track.id);
       if (progress) {
         const totalModules = track.modules?.length || 0;
-        const percent = totalModules > 0 ? Math.round((progress.completedModules.length / totalModules) * 100) : 0;
+        const percent = totalModules > 0 ? Math.round(((progress.completedModules as string[]).length / totalModules) * 100) : 0;
         if (percent === 100) completedTracks++;
-        completedModules += progress.completedModules.length;
+        completedModules += (progress.completedModules as string[]).length;
       }
     }
 
@@ -224,73 +1004,150 @@ app.get('/users/:id/progress-summary', async (req, res) => {
 app.get('/courses/recommend/:userId', async (req, res) => {
   const { userId } = req.params;
   if (!userId) return res.status(400).json({ error: 'Missing userId' });
-  // Get latest assessment
-  const assessment = await prisma.assessment.findFirst({
-    where: { userId },
-    orderBy: { createdAt: 'desc' }
-  });
-  if (!assessment) return res.status(404).json({ error: 'No assessment found' });
-  // Refetch recommended tracks with full details
-  const recommendedIds = ((assessment.recommendedTracks as any[]) || []).map((t: any) => t.id);
-  let recommended = await prisma.track.findMany({
-    where: { id: { in: recommendedIds } },
-    include: { modules: true, games: true, certificates: true }
-  });
-  // Fallback: if no recommended tracks, return top 3 tracks
-  if (recommended.length === 0) {
-    recommended = await prisma.track.findMany({
-      take: 3,
+  
+  try {
+    // Get latest assessment
+    const assessment = await prisma.assessment.findFirst({
+      where: { userId },
+      orderBy: { createdAt: 'desc' }
+    });
+    if (!assessment) return res.status(404).json({ error: 'No assessment found' });
+    
+    // Refetch recommended tracks with full details
+    const recommendedIds = ((assessment.recommendedTracks as any[]) || []).map((t: any) => t.id);
+    let recommended = await prisma.track.findMany({
+      where: { id: { in: recommendedIds } },
       include: { modules: true, games: true, certificates: true }
     });
-  }
-  res.json({ recommended });
-});
-app.get('/community/posts', async (req, res) => {
-  try {
-  const posts = await prisma.post.findMany({
-    select: {
-      id: true,
-      content: true,
-      tags: true,
-      mediaUrl: true,
-      mediaType: true,
-      createdAt: true,
-      updatedAt: true,
-      user: {
-        select: {
-          id: true,
-          name: true,
-          role: true
+    
+    // Get user's completed tracks
+    const userProgress = await prisma.trackProgress.findMany({
+      where: { userId }
+    });
+    
+    // Identify completed tracks (100% progress)
+    const completedTrackIds = new Set<string>();
+    for (const progress of userProgress) {
+      const track = recommended.find(t => t.id === progress.trackId);
+      if (track) {
+        const totalModules = track.modules?.length || 0;
+        const completedModules = (progress.completedModules as string[]).length;
+        const progressPercent = totalModules > 0 ? Math.round((completedModules / totalModules) * 100) : 0;
+        
+        if (progressPercent === 100) {
+          completedTrackIds.add(track.id);
         }
-      },
-      comments: {
-        include: {
-          user: {
-            select: {
-              id: true,
-              name: true
-            }
+      }
+    }
+    
+    // Filter out completed tracks
+    recommended = recommended.filter(track => !completedTrackIds.has(track.id));
+    
+    // Fallback: if no recommended tracks available, return top 3 uncompleted tracks
+    if (recommended.length === 0) {
+      const allTracks = await prisma.track.findMany({
+        include: { modules: true, games: true, certificates: true }
+      });
+      
+      // Check all tracks for completion status
+      const allCompletedTrackIds = new Set<string>();
+      for (const progress of userProgress) {
+        const track = allTracks.find(t => t.id === progress.trackId);
+        if (track) {
+          const totalModules = track.modules?.length || 0;
+          const completedModules = (progress.completedModules as string[]).length;
+          const progressPercent = totalModules > 0 ? Math.round((completedModules / totalModules) * 100) : 0;
+          
+          if (progressPercent === 100) {
+            allCompletedTrackIds.add(track.id);
           }
         }
       }
-    },
-    orderBy: {
-      createdAt: 'desc'
+      
+      recommended = allTracks
+        .filter(track => !allCompletedTrackIds.has(track.id))
+        .slice(0, 3);
     }
-  });
+    
+    res.json({ recommended });
+  } catch (err) {
+    console.error('Error in /courses/recommend:', err);
+    res.status(500).json({ error: 'Failed to fetch recommendations' });
+  }
+});
+app.get('/community/posts', async (req, res) => {
+  try {
+    // Try to get userId from token if available
+    let currentUserId: string | null = null;
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.substring(7);
+      try {
+        const decoded = jwt.verify(token, JWT_SECRET) as { userId: string };
+        currentUserId = decoded.userId;
+      } catch (err) {
+        // Token invalid or expired, continue without user context
+      }
+    }
+
+    const posts = await prisma.post.findMany({
+      select: {
+        id: true,
+        content: true,
+        tags: true,
+        mediaUrl: true,
+        mediaType: true,
+        likes: true,
+        createdAt: true,
+        updatedAt: true,
+        user: {
+          select: {
+            id: true,
+            name: true,
+            role: true
+          }
+        },
+        comments: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                name: true
+              }
+            }
+          }
+        },
+        postLikes: currentUserId ? {
+          where: {
+            userId: currentUserId
+          }
+        } : false
+      },
+      orderBy: {
+        createdAt: 'desc'
+      }
+    });
 
   // Filter out posts where user is null (orphaned posts)
-  const validPosts = posts.filter(post => post.user !== null);    // Transform posts to match frontend expectations
+  const validPosts = posts.filter((post: any) => post.user !== null);    // Transform posts to match frontend expectations
     const transformedPosts = (validPosts as any[]).map((post: any) => ({
       id: post.id,
       content: post.content,
       tags: post.tags || [],
       mediaUrl: post.mediaUrl,
       mediaType: post.mediaType,
+      likes: post.likes || 0,
+      isLiked: currentUserId ? (post.postLikes && post.postLikes.length > 0) : false,
       createdAt: post.createdAt,
       updatedAt: post.updatedAt,
       user: post.user,
-      comments: post.comments,
+      comments: post.comments.map((comment: any) => ({
+        id: comment.id,
+        text: comment.content,
+        content: comment.content,
+        user: comment.user,
+        createdAt: comment.createdAt
+      })),
       media: post.mediaUrl && post.mediaType ? [{
         url: post.mediaUrl,
         type: post.mediaType
@@ -343,6 +1200,10 @@ app.post('/community/posts', requireAuth, async (req, res) => {
       }
     });
 
+    // Award XP for community participation
+    await awardXP(userId, XP_REWARDS.COMMUNITY_POST, 'Created community post');
+    await checkAndAwardBadges(userId);
+
     // Transform to match frontend expectations
     const transformedPost = (post as any) && {
       id: post.id,
@@ -368,14 +1229,15 @@ app.post('/community/posts', requireAuth, async (req, res) => {
 });
 app.post('/community/posts/:postId/comments', requireAuth, async (req, res) => {
   const { postId } = req.params;
-  const { content } = req.body;
+  const { text, content } = req.body;
   const userId = req.userId;
 
   if (!userId) {
     return res.status(401).json({ error: 'Authentication required' });
   }
 
-  if (!content || content.trim().length === 0) {
+  const commentText = text || content;
+  if (!commentText || commentText.trim().length === 0) {
     return res.status(400).json({ error: 'Comment content is required' });
   }
 
@@ -390,7 +1252,7 @@ app.post('/community/posts/:postId/comments', requireAuth, async (req, res) => {
       data: {
         postId,
         userId,
-        content: content.trim()
+        content: commentText.trim()
       },
       include: {
         user: {
@@ -402,18 +1264,97 @@ app.post('/community/posts/:postId/comments', requireAuth, async (req, res) => {
       }
     });
 
+    // Award XP for commenting
+    await awardXP(userId, XP_REWARDS.COMMUNITY_COMMENT, 'Added comment');
+
     res.json({
       comment: {
         id: comment.id,
+        text: comment.content,
+        content: comment.content,
+        user: comment.user,
+        createdAt: comment.createdAt,
         author: comment.user.name,
         avatar: comment.user.name.charAt(0).toUpperCase(),
-        content: comment.content,
         timeAgo: 'Just now'
       }
     });
   } catch (err) {
     console.error('POST /community/posts/:postId/comments error:', err);
     res.status(500).json({ error: 'Failed to create comment' });
+  }
+});
+
+// Like/Unlike a post
+app.post('/community/posts/:postId/like', requireAuth, async (req, res) => {
+  const { postId } = req.params;
+  const userId = req.userId;
+
+  if (!userId) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+
+  try {
+    // Check if post exists
+    const post = await prisma.post.findUnique({ where: { id: postId } });
+    if (!post) {
+      return res.status(404).json({ error: 'Post not found' });
+    }
+
+    // Check if user already liked the post
+    const existingLike = await prisma.postLike.findUnique({
+      where: {
+        postId_userId: {
+          postId,
+          userId
+        }
+      }
+    });
+
+    let isLiked = false;
+    let likesCount = 0;
+
+    if (existingLike) {
+      // Unlike: Remove the like
+      await prisma.postLike.delete({
+        where: { id: existingLike.id }
+      });
+      
+      // Decrement likes count
+      const updatedPost = await prisma.post.update({
+        where: { id: postId },
+        data: { likes: { decrement: 1 } }
+      });
+      likesCount = updatedPost.likes;
+      isLiked = false;
+    } else {
+      // Like: Create new like
+      await prisma.postLike.create({
+        data: {
+          postId,
+          userId
+        }
+      });
+
+      // Increment likes count
+      const updatedPost = await prisma.post.update({
+        where: { id: postId },
+        data: { likes: { increment: 1 } }
+      });
+      likesCount = updatedPost.likes;
+      isLiked = true;
+
+      // Award XP for liking (only once)
+      await awardXP(userId, XP_REWARDS.COMMUNITY_LIKE, 'Liked a post');
+    }
+
+    res.json({ 
+      likes: likesCount,
+      isLiked 
+    });
+  } catch (err) {
+    console.error('POST /community/posts/:postId/like error:', err);
+    res.status(500).json({ error: 'Failed to like/unlike post' });
   }
 });
 
@@ -437,6 +1378,40 @@ app.get('/community/stats', async (req, res) => {
   } catch (err) {
     console.error('GET /community/stats error:', err);
     res.status(500).json({ error: 'Failed to fetch community stats' });
+  }
+});
+
+// Get trending topics (hashtags from posts)
+app.get('/community/trending-topics', async (req, res) => {
+  try {
+    const posts = await prisma.post.findMany({
+      select: {
+        tags: true
+      }
+    });
+
+    const hashtagCounts: Record<string, number> = {};
+
+    posts.forEach((post: any) => {
+      // Only count tags from the tags array (hashtags are already extracted there during post creation)
+      if (post.tags && Array.isArray(post.tags)) {
+        post.tags.forEach((tag: any) => {
+          const normalizedTag = tag.toLowerCase();
+          hashtagCounts[normalizedTag] = (hashtagCounts[normalizedTag] || 0) + 1;
+        });
+      }
+    });
+
+    // Sort by count and get top 10
+    const trendingTopics = Object.entries(hashtagCounts)
+      .sort(([, countA], [, countB]) => countB - countA)
+      .slice(0, 10)
+      .map(([tag, count]) => ({ tag, count }));
+
+    res.json({ trendingTopics });
+  } catch (err) {
+    console.error('GET /community/trending-topics error:', err);
+    res.status(500).json({ error: 'Failed to fetch trending topics' });
   }
 });
 
@@ -503,24 +1478,35 @@ app.get('/community/mentors', async (req, res) => {
           select: {
             id: true
           }
-        },
-        mentor: true
+        }
       },
       take: 20 // Limit to 20 mentors
     });
 
     // Transform mentors to match frontend expectations
-    const transformedMentors = mentors.map(mentor => ({
-      id: mentor.id,
-      name: mentor.name,
-      role: mentor.role,
-      avatar: mentor.name.charAt(0).toUpperCase(),
-      expertise: mentor.mentor?.skills || ['General IT'],
-      rating: 4.5, // TODO: Add rating system
-      students: mentor.posts.length * 2, // Mock based on posts
-      sessions: mentor.posts.length * 3, // Mock based on posts
-      bio: mentor.bio,
-      location: mentor.profiles?.[0]?.location
+    const transformedMentors = await Promise.all(mentors.map(async (mentor: any) => {
+      // Get all sessions for this mentor
+      const sessions = await prisma.session.findMany({
+        where: { mentorId: mentor.id },
+        select: { studentId: true }
+      });
+
+      // Calculate unique students
+      const uniqueStudentIds = new Set(sessions.map(s => s.studentId));
+      const studentCount = uniqueStudentIds.size;
+      const sessionCount = sessions.length;
+
+      return {
+        id: mentor.id,
+        name: mentor.name,
+        role: mentor.role,
+        avatar: mentor.name.charAt(0).toUpperCase(),
+        expertise: mentor.mentor?.skills || ['General IT'],
+        students: studentCount,
+        sessions: sessionCount,
+        bio: mentor.bio,
+        location: mentor.profiles?.[0]?.location
+      };
     }));
 
     res.json({ mentors: transformedMentors });
@@ -535,13 +1521,103 @@ app.get('/users', async (req, res) => {
       profiles: true
     }
   });
-  const usersWithLocation = users.map(u => {
+  const usersWithLocation = users.map((u: any) => {
     const location = u.profiles && u.profiles.length > 0 ? u.profiles[0].location : '';
     const { profiles, ...userData } = u;
     return { ...userData, location };
   });
   res.json({ users: usersWithLocation });
 });
+
+// Get badge definitions
+app.get('/badges', (req, res) => {
+  res.json({ badges: BADGE_DEFINITIONS });
+});
+
+// Leaderboard endpoint - top users by XP
+app.get('/leaderboard', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 50;
+    
+    const users = await prisma.user.findMany({
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        xp: true,
+        level: true,
+        badges: true,
+        profilePicture: true,
+        trackProgresses: {
+          select: {
+            completedModules: true,
+            completedGames: true,
+            track: {
+              select: {
+                difficulty: true
+              }
+            }
+          }
+        },
+        profiles: {
+          select: {
+            location: true
+          }
+        }
+      },
+      orderBy: {
+        xp: 'desc'
+      },
+      take: limit
+    });
+
+    const leaderboard = users.map((user, index) => {
+      // Calculate stats
+      const totalModulesCompleted = user.trackProgresses.reduce((sum, tp) => 
+        sum + tp.completedModules.length, 0
+      );
+      const totalGamesCompleted = user.trackProgresses.reduce((sum, tp) => 
+        sum + tp.completedGames.length, 0
+      );
+      
+      // Count completed tracks
+      const completedTracks = user.trackProgresses.filter(tp => {
+        // A track is considered complete if it has any completed modules (simplified)
+        return tp.completedModules.length > 0;
+      }).length;
+
+      return {
+        rank: index + 1,
+        id: user.id,
+        name: user.name,
+        role: user.role,
+        xp: user.xp || 0,
+        level: user.level || 1,
+        badgeCount: (user.badges as string[]).length,
+        badges: user.badges,
+        profilePicture: user.profilePicture,
+        location: user.profiles[0]?.location || '',
+        stats: {
+          tracksCompleted: completedTracks,
+          modulesCompleted: totalModulesCompleted,
+          gamesCompleted: totalGamesCompleted
+        }
+      };
+    });
+
+    res.json({ leaderboard });
+  } catch (err) {
+    console.error('Leaderboard error:', err);
+    res.status(500).json({ error: 'Failed to fetch leaderboard' });
+  }
+});
+
+// Get badge definitions
+app.get('/badges', async (req, res) => {
+  res.json({ badges: BADGE_DEFINITIONS });
+});
+
 // Update user profile
 app.put('/users/:id', async (req, res) => {
   const { id } = req.params;
@@ -663,7 +1739,7 @@ app.get('/stats', async (req, res) => {
     const mentors = await prisma.user.count({ where: { role: 'IT Professional' } });
     const courses = 3;
     const gameTypes = await prisma.game.findMany({ select: { type: true } });
-    const games = new Set(gameTypes.map(g => g.type)).size;
+    const games = new Set(gameTypes.map((g: any) => g.type)).size;
     res.json({ users, mentors, courses, games });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch stats' });
@@ -766,16 +1842,42 @@ app.post('/results/ai-feedback', async (req, res) => {
     const strongSkills = sorted.filter(([_, score]) => Number(score) >= 70).map(([skill]) => skill.replace(/_/g, ' '));
 
     // Recommend tracks from DB based on assessment strengths
-    const tracks = await prisma.track.findMany();
-    let recommendedTracks = tracks.filter((track: { title: string; description?: string }) => {
+    const tracks = await prisma.track.findMany({ include: { modules: true } });
+    
+    // Get user's completed tracks (if user info available)
+    let completedTrackIds = new Set<string>();
+    if (userInfo && userInfo.id) {
+      const userProgress = await prisma.trackProgress.findMany({
+        where: { userId: userInfo.id }
+      });
+      
+      // Identify completed tracks (100% progress)
+      for (const progress of userProgress) {
+        const track = tracks.find(t => t.id === progress.trackId);
+        if (track) {
+          const totalModules = track.modules?.length || 0;
+          const completedModules = (progress.completedModules as string[]).length;
+          const progressPercent = totalModules > 0 ? Math.round((completedModules / totalModules) * 100) : 0;
+          
+          if (progressPercent === 100) {
+            completedTrackIds.add(track.id);
+          }
+        }
+      }
+    }
+    
+    // Filter out completed tracks
+    const availableTracks = tracks.filter(track => !completedTrackIds.has(track.id));
+    
+    let recommendedTracks = availableTracks.filter((track: { title: string; description?: string }) => {
       const title = track.title.toLowerCase();
       const desc = (track.description || '').toLowerCase();
       return topSkills.some(skill => title.includes(skill.toLowerCase()) || desc.includes(skill.toLowerCase()));
     });
     
-    // Fallback: If no tracks matched, recommend top 3 tracks
+    // Fallback: If no tracks matched, recommend top 3 available tracks
     if (recommendedTracks.length === 0) {
-      recommendedTracks = tracks.slice(0, 3);
+      recommendedTracks = availableTracks.slice(0, 3);
     }
 
     // Generate AI feedback using Hugging Face
@@ -794,12 +1896,13 @@ app.post('/results/ai-feedback', async (req, res) => {
 
 Please provide:
 1. A personalized 2-3 sentence career insight based on their performance
-2. One specific IT career path that matches their skill profile best
+2. EXACTLY 5 specific IT career path suggestions that match their skill profile (list them on separate lines)
 3. Three actionable next steps to advance their IT career
 
 Keep the tone encouraging and professional.`;
 
-        const response = await fetch('https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1', {
+        // Use a more reliable and currently available model
+        const response = await fetch('https://api-inference.huggingface.co/models/meta-llama/Llama-3.2-3B-Instruct', {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${apiKey}`,
@@ -827,15 +1930,40 @@ Keep the tone encouraging and professional.`;
             // Extract feedback (first few sentences)
             feedback = lines.slice(0, 3).join(' ').trim();
             
-            // Extract career path (look for career-related keywords)
-            const careerLine = lines.find((line: string) => 
-              line.toLowerCase().includes('career') || 
-              line.toLowerCase().includes('path') ||
+            // Extract career paths (look for lines with career-related keywords)
+            const careerLines = lines.filter((line: string) => 
               line.toLowerCase().includes('developer') ||
               line.toLowerCase().includes('engineer') ||
-              line.toLowerCase().includes('analyst')
+              line.toLowerCase().includes('analyst') ||
+              line.toLowerCase().includes('specialist') ||
+              line.toLowerCase().includes('architect') ||
+              line.toLowerCase().includes('administrator') ||
+              line.toLowerCase().includes('consultant') ||
+              line.toLowerCase().includes('technician') ||
+              line.toLowerCase().includes('manager') ||
+              /^\d+\./.test(line.trim()) && (
+                line.toLowerCase().includes('it') ||
+                line.toLowerCase().includes('tech') ||
+                line.toLowerCase().includes('software') ||
+                line.toLowerCase().includes('web')
+              )
             );
-            careerPath = careerLine || `Based on your skills, consider: ${topSkills[0]} specialist roles`;
+            
+            // Get up to 5 career suggestions
+            const careerSuggestions = careerLines.slice(0, 5);
+            if (careerSuggestions.length >= 3) {
+              careerPath = careerSuggestions.join('\n');
+            } else {
+              // Fallback with skill-based suggestions
+              const fallbackCareers = [
+                `${topSkills[0]} Developer`,
+                `${topSkills[1] || 'IT'} Specialist`,
+                `Junior ${topSkills[0]} Engineer`,
+                `IT Support Specialist`,
+                `Technology Analyst`
+              ];
+              careerPath = fallbackCareers.join('\n');
+            }
             
             // Extract next steps (numbered items)
             const stepLines = lines.filter((line: string) => /^\d+\./.test(line.trim()));
@@ -853,13 +1981,40 @@ Keep the tone encouraging and professional.`;
     if (!feedback) {
       if (avgScore >= 70) {
         feedback = `Excellent performance! You've demonstrated strong capabilities across multiple IT areas, particularly in ${topSkills.join(' and ')}. Your assessment results show you're well-prepared for advanced IT career paths. Consider specializing in areas that match your top skills to maximize your career potential.`;
-        careerPath = `Senior ${topSkills[0]} Specialist or ${topSkills[1]} Engineer`;
+        
+        // Generate 5 career suggestions based on top skills
+        const careerSuggestions = [
+          `Senior ${topSkills[0]} Specialist`,
+          `${topSkills[1] || topSkills[0]} Engineer`,
+          `IT Solutions Architect`,
+          `Technology Consultant`,
+          `${topSkills[0]} Team Lead`
+        ];
+        careerPath = careerSuggestions.join('\n');
       } else if (avgScore >= 50) {
         feedback = `Good foundation! You show promise in ${topSkills.join(' and ')}, which are valuable skills in the IT industry. ${weakSkills.length > 0 ? `Focus on strengthening your ${weakSkills.slice(0, 2).join(' and ')} skills to become more well-rounded.` : 'Continue building on your strengths.'} With focused learning, you can advance to more specialized roles.`;
-        careerPath = `${topSkills[0]} Developer or IT Support with ${topSkills[1]} focus`;
+        
+        // Generate 5 career suggestions for intermediate level
+        const careerSuggestions = [
+          `${topSkills[0]} Developer`,
+          `Junior ${topSkills[1] || topSkills[0]} Engineer`,
+          `IT Support Specialist`,
+          `Systems Administrator`,
+          `Junior Web Developer`
+        ];
+        careerPath = careerSuggestions.join('\n');
       } else {
         feedback = `You're starting your IT journey! Everyone begins somewhere, and your interest in technology is the first step. Focus on building fundamentals in ${weakSkills.length > 0 ? weakSkills.slice(0, 2).join(' and ') : 'core IT concepts'}. The recommended tracks below are specifically chosen to help you build a strong foundation.`;
-        careerPath = `Start with IT Foundation courses, then specialize in ${topSkills[0]}`;
+        
+        // Generate 5 entry-level career suggestions
+        const careerSuggestions = [
+          `Help Desk Technician`,
+          `Junior IT Support`,
+          `Technical Support Specialist`,
+          `Entry-Level ${topSkills[0]} Developer`,
+          `IT Trainee`
+        ];
+        careerPath = careerSuggestions.join('\n');
       }
 
       const stepsArray = [];
@@ -969,7 +2124,24 @@ app.get('/tracks', async (req, res) => {
         }
       }
     });
-    res.json({ tracks });
+    
+    // Transform lessons to flatten content field for backward compatibility
+    const transformedTracks = tracks.map(track => ({
+      ...track,
+      modules: track.modules.map(module => ({
+        ...module,
+        lessons: module.lessons.map(lesson => ({
+          ...lesson,
+          subtitle: (lesson.content as any)?.subtitle,
+          body: (lesson.content as any)?.body,
+          resources: (lesson.content as any)?.resources,
+          estimatedMins: (lesson.content as any)?.estimatedMins,
+          estimatedMinutes: (lesson.content as any)?.estimatedMins  // Add alias for frontend
+        }))
+      }))
+    }));
+    
+    res.json({ tracks: transformedTracks });
   } catch (err) {
     console.error('GET /tracks error:', err);
     res.status(500).json({ error: 'Failed to fetch tracks' });
@@ -1003,11 +2175,13 @@ app.post('/tracks', requireAuth, async (req, res) => {
           lessons: {
             create: mod.lessons ? mod.lessons.map((lesson: any, lidx: number) => ({
               title: lesson.title,
-              subtitle: lesson.subtitle,
-              body: lesson.body || {},
-              resources: lesson.resources,
-              order: lesson.order || lidx,
-              estimatedMins: lesson.estimatedMins
+              content: {
+                subtitle: lesson.subtitle,
+                body: lesson.body,
+                resources: lesson.resources,
+                estimatedMins: lesson.estimatedMins
+              },
+              order: lesson.order || lidx
             })) : []
           },
           quizzes: {
@@ -1106,11 +2280,13 @@ app.put('/tracks/:id', requireAuth, async (req, res) => {
           lessons: {
             create: mod.lessons ? mod.lessons.map((lesson: any, lidx: number) => ({
               title: lesson.title,
-              subtitle: lesson.subtitle,
-              body: lesson.body || {},
-              resources: lesson.resources,
-              order: lesson.order || lidx,
-              estimatedMins: lesson.estimatedMins
+              content: {
+                subtitle: lesson.subtitle,
+                body: lesson.body,
+                resources: lesson.resources,
+                estimatedMins: lesson.estimatedMins
+              },
+              order: lesson.order || lidx
             })) : []
           },
           quizzes: {
@@ -1247,7 +2423,24 @@ app.get('/tracks/:id', async (req, res) => {
       }
     });
     if (!track) return res.status(404).json({ error: 'Track not found' });
-    res.json({ track });
+    
+    // Transform lessons to flatten content field for backward compatibility
+    const transformedTrack = {
+      ...track,
+      modules: track.modules.map(module => ({
+        ...module,
+        lessons: module.lessons.map(lesson => ({
+          ...lesson,
+          subtitle: (lesson.content as any)?.subtitle,
+          body: (lesson.content as any)?.body,
+          resources: (lesson.content as any)?.resources,
+          estimatedMins: (lesson.content as any)?.estimatedMins,
+          estimatedMinutes: (lesson.content as any)?.estimatedMins  // Add alias for frontend
+        }))
+      }))
+    };
+    
+    res.json({ track: transformedTrack });
   } catch (err) {
     console.error(`GET /tracks/${id} error:`, err);
     res.status(500).json({ error: 'Failed to fetch track' });
@@ -1273,7 +2466,29 @@ app.get('/track/:id', async (req, res) => {
       }
     });
     if (!track) return res.status(404).json({ error: 'Track not found' });
-    res.json({ track });
+    
+    // Transform lessons to flatten content field for backward compatibility
+    const transformedTrack = {
+      ...track,
+      modules: track.modules.map(module => ({
+        ...module,
+        lessons: module.lessons.map(lesson => {
+          console.log('Lesson content:', JSON.stringify(lesson.content, null, 2));
+          const transformed = {
+            ...lesson,
+            subtitle: (lesson.content as any)?.subtitle,
+            body: (lesson.content as any)?.body,
+            resources: (lesson.content as any)?.resources,
+            estimatedMins: (lesson.content as any)?.estimatedMins,
+            estimatedMinutes: (lesson.content as any)?.estimatedMins  // Add alias for frontend
+          };
+          console.log('Transformed lesson:', JSON.stringify(transformed, null, 2));
+          return transformed;
+        })
+      }))
+    };
+    
+    res.json({ track: transformedTrack });
   } catch (err) {
     console.error(`GET /track/${id} error:`, err);
     res.status(500).json({ error: 'Failed to fetch track' });
@@ -1286,8 +2501,19 @@ app.get('/modules/:id/lessons', async (req, res) => {
   try {
     const lessons = await prisma.lesson.findMany({ where: { moduleId: id } });
   // Prisma typing for 'order' can vary across generated clients; sort in JS using a safe cast
-  lessons.sort((a, b) => ((a as unknown as { order?: number }).order ?? 0) - ((b as unknown as { order?: number }).order ?? 0));
-    res.json({ lessons });
+  lessons.sort((a: any, b: any) => ((a as unknown as { order?: number }).order ?? 0) - ((b as unknown as { order?: number }).order ?? 0));
+    
+    // Transform lessons to flatten content field for backward compatibility
+    const transformedLessons = lessons.map(lesson => ({
+      ...lesson,
+      subtitle: (lesson.content as any)?.subtitle,
+      body: (lesson.content as any)?.body,
+      resources: (lesson.content as any)?.resources,
+      estimatedMins: (lesson.content as any)?.estimatedMins,
+      estimatedMinutes: (lesson.content as any)?.estimatedMins  // Add alias for frontend
+    }));
+    
+    res.json({ lessons: transformedLessons });
   } catch (err) {
     console.error(`GET /modules/${id}/lessons error:`, err);
     res.status(500).json({ error: 'Failed to fetch lessons' });
@@ -1320,12 +2546,130 @@ app.post('/modules/:id/lessons', async (req, res) => {
       resources: resources || null,
       order: order || 0,
       estimatedMins: estimatedMins || null,
-    } as unknown as Prisma.LessonCreateInput;
+    } as any;
     const lesson = await prisma.lesson.create({ data: createData });
     res.json({ lesson });
   } catch (err) {
     console.error(`POST /modules/${id}/lessons error:`, err);
     res.status(500).json({ error: 'Failed to create lesson' });
+  }
+});
+
+// ============================================
+// COINS & HINTS SYSTEM
+// ============================================
+
+// Get user's coin balance
+app.get('/users/:userId/coins', requireAuth, async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { coins: true }
+    });
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    res.json({ coins: user.coins || 0 });
+  } catch (error) {
+    console.error('Get coins error:', error);
+    res.status(500).json({ error: 'Failed to get coin balance' });
+  }
+});
+
+// Get module hints and cost
+app.get('/modules/:moduleId/hints', requireAuth, async (req, res) => {
+  const { moduleId } = req.params;
+  try {
+    const module = await prisma.module.findUnique({
+      where: { id: moduleId },
+      include: { track: { select: { difficulty: true } } }
+    });
+    
+    if (!module) {
+      return res.status(404).json({ error: 'Module not found' });
+    }
+    
+    res.json({
+      hints: module.hints,
+      hintCost: module.hintCost,
+      difficulty: module.track.difficulty,
+      isFree: module.hintCost === 0
+    });
+  } catch (error) {
+    console.error('Get hints error:', error);
+    res.status(500).json({ error: 'Failed to get hints' });
+  }
+});
+
+// Purchase and reveal a hint
+app.post('/users/:userId/modules/:moduleId/purchase-hint', requireAuth, async (req, res) => {
+  const { userId, moduleId } = req.params;
+  
+  if (req.userId !== userId) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  
+  try {
+    // Get user and module
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    const module = await prisma.module.findUnique({
+      where: { id: moduleId },
+      include: { track: { select: { difficulty: true } } }
+    });
+    
+    if (!user || !module) {
+      return res.status(404).json({ error: 'User or module not found' });
+    }
+    
+    // Check if user has enough coins (free for beginners)
+    if (module.hintCost > 0 && (user.coins || 0) < module.hintCost) {
+      return res.status(400).json({
+        error: 'Insufficient coins',
+        required: module.hintCost,
+        current: user.coins || 0
+      });
+    }
+    
+    // Deduct coins if not free
+    if (module.hintCost > 0) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { coins: { decrement: module.hintCost } }
+      });
+    }
+    
+    // Extract hint content from JSON hints field
+    let hintContent = 'Hint not available for this module.';
+    
+    if (module.hints && typeof module.hints === 'object') {
+      const hints = module.hints as any;
+      if (hints.general) {
+        hintContent = hints.general;
+        // Add specific hints if available
+        if (hints.specific && Array.isArray(hints.specific) && hints.specific.length > 0) {
+          hintContent += '\n\nSpecific tips:\n' + hints.specific.map((h: string, i: number) => `${i + 1}. ${h}`).join('\n');
+        }
+      } else if (hints.hint) {
+        hintContent = hints.hint;
+      }
+    } else if (typeof module.hints === 'string') {
+      hintContent = module.hints;
+    }
+    
+    res.json({
+      hint: hintContent,
+      coinsSpent: module.hintCost,
+      newBalance: (user.coins || 0) - module.hintCost,
+      message: module.hintCost === 0 
+        ? '✨ Free hint unlocked!' 
+        : `💡 Hint purchased for ${module.hintCost} coins!`
+    });
+  } catch (error) {
+    console.error('Purchase hint error:', error);
+    res.status(500).json({ error: 'Failed to purchase hint' });
   }
 });
 
@@ -1368,13 +2712,47 @@ app.post('/users/:userId/track-progress/:trackId/module/:moduleId/complete', req
       progress = await prisma.trackProgress.create({ data: { userId, trackId, completedModules: [moduleId], completedGames: [] } });
     } else {
       const modules = new Set(progress.completedModules || []);
+      const wasAlreadyCompleted = modules.has(moduleId);
       modules.add(moduleId);
       progress = await prisma.trackProgress.update({ where: { id: progress.id }, data: { completedModules: Array.from(modules) } });
+      
+      // Only award XP and COINS if this is a new completion
+      if (!wasAlreadyCompleted) {
+        await awardXP(userId, XP_REWARDS.MODULE_COMPLETE, `Completed module ${moduleId}`);
+        await checkAndAwardBadges(userId);
+        
+        // Award coins based on module's coinReward
+        const module = await prisma.module.findUnique({ where: { id: moduleId } });
+        if (module && module.coinReward) {
+          await prisma.user.update({
+            where: { id: userId },
+            data: { coins: { increment: module.coinReward } }
+          });
+          console.log(`🪙 Awarded ${module.coinReward} coins to user ${userId} for completing module`);
+        }
+      }
     }
+    
     // compute percentage based on number of modules in track
     const track = await prisma.track.findUnique({ where: { id: trackId }, include: { modules: true } });
     const total = track?.modules?.length || 0;
-    const pct = total > 0 ? Math.round(((progress.completedModules?.length || 0) / total) * 100) : 0;
+    const completedCount = progress.completedModules?.length || 0;
+    const pct = total > 0 ? Math.round((completedCount / total) * 100) : 0;
+    
+    // Check if track is now complete and award track completion XP
+    if (pct >= 100 && total > 0) {
+      const difficulty = track?.difficulty?.toLowerCase() || '';
+      let trackXP = 0;
+      if (difficulty === 'beginner') trackXP = XP_REWARDS.TRACK_BEGINNER;
+      else if (difficulty === 'intermediate') trackXP = XP_REWARDS.TRACK_INTERMEDIATE;
+      else if (difficulty === 'advanced') trackXP = XP_REWARDS.TRACK_ADVANCED;
+      
+      if (trackXP > 0) {
+        await awardXP(userId, trackXP, `Completed ${difficulty} track: ${track?.title}`);
+        await checkAndAwardBadges(userId);
+      }
+    }
+    
     res.json({ progress, percent: pct });
   } catch (err) {
     console.error('Mark module complete error:', err);
@@ -1385,6 +2763,7 @@ app.post('/users/:userId/track-progress/:trackId/module/:moduleId/complete', req
 // Mark a game complete for a user's track
 app.post('/users/:userId/track-progress/:trackId/game/:gameId/complete', requireAuth, async (req, res) => {
   const { userId, trackId, gameId } = req.params;
+  const { score } = req.body; // score is percentage (0-100)
   if (req.userId !== userId) return res.status(403).json({ error: 'Forbidden' });
   try {
     let progress = await prisma.trackProgress.findFirst({ where: { userId, trackId } });
@@ -1392,8 +2771,50 @@ app.post('/users/:userId/track-progress/:trackId/game/:gameId/complete', require
       progress = await prisma.trackProgress.create({ data: { userId, trackId, completedModules: [], completedGames: [gameId] } });
     } else {
       const games = new Set(progress.completedGames || []);
+      const wasAlreadyCompleted = games.has(gameId);
       games.add(gameId);
       progress = await prisma.trackProgress.update({ where: { id: progress.id }, data: { completedGames: Array.from(games) } });
+      
+      // Only award XP if this is a new completion
+      if (!wasAlreadyCompleted) {
+        // Award XP based on score
+        let xpAmount = XP_REWARDS.GAME_BRONZE; // default
+        if (score >= 90) {
+          xpAmount = XP_REWARDS.GAME_GOLD;
+        } else if (score >= 80) {
+          xpAmount = XP_REWARDS.GAME_SILVER;
+        }
+        
+        await awardXP(userId, xpAmount, `Completed game with ${score}% score`);
+        
+        // Check for perfect score badge
+        if (score >= 100) {
+          const user = await prisma.user.findUnique({ where: { id: userId } });
+          if (user && !(user.badges as string[]).includes('perfect_score')) {
+            await awardBadge(userId, 'perfect_score');
+          }
+        }
+        
+        // Check for code warrior badge (5 coding challenges)
+        const game = await prisma.game.findUnique({ where: { id: gameId } });
+        if (game && game.type === 'coding') {
+          // Count completed coding games across all tracks
+          const allProgress = await prisma.trackProgress.findMany({ where: { userId } });
+          const allCompletedGames = allProgress.flatMap(p => p.completedGames);
+          const codingGames = await prisma.game.findMany({
+            where: { id: { in: allCompletedGames }, type: 'coding' }
+          });
+          
+          if (codingGames.length >= 5) {
+            const user = await prisma.user.findUnique({ where: { id: userId } });
+            if (user && !(user.badges as string[]).includes('code_warrior')) {
+              await awardBadge(userId, 'code_warrior');
+            }
+          }
+        }
+        
+        await checkAndAwardBadges(userId);
+      }
     }
     res.json({ progress });
   } catch (err) {
@@ -1481,7 +2902,7 @@ app.get('/events', async (req, res) => {
     });
 
     // Transform events for frontend
-    const transformedEvents = events.map(event => ({
+    const transformedEvents = events.map((event: any) => ({
       id: event.id,
       title: event.title,
       description: event.description,
@@ -1795,6 +3216,20 @@ app.post('/events/:id/register', requireAuth, async (req, res) => {
       return res.status(409).json({ error: 'Already registered for this event' });
     }
 
+    // Check for calendar conflicts
+    const userConflict = await checkCalendarConflicts(
+      userId!,
+      event.startTime,
+      event.endTime
+    );
+
+    if (userConflict.hasConflict) {
+      return res.status(409).json({ 
+        error: 'Schedule conflict', 
+        details: userConflict.conflictDetails 
+      });
+    }
+
     // Check capacity
     if (event.capacity) {
       const registrationCount = await prisma.eventRegistration.count({
@@ -1824,12 +3259,32 @@ app.post('/events/:id/register', requireAuth, async (req, res) => {
           select: {
             title: true,
             startTime: true,
+            endTime: true,
             location: true,
             virtualLink: true
           }
         }
       }
     });
+
+    // Auto-add event to user's personal calendar
+    try {
+      await prisma.personalCalendarEvent.create({
+        data: {
+          userId: userId!,
+          title: `Event: ${registration.event.title}`,
+          description: registration.event.location || registration.event.virtualLink || '',
+          startTime: registration.event.startTime,
+          endTime: registration.event.endTime,
+          isAllDay: false,
+          type: 'event-registration',
+          relatedId: registration.id
+        }
+      });
+    } catch (calendarErr) {
+      console.error('Failed to add event to calendar:', calendarErr);
+      // Continue even if calendar addition fails
+    }
 
     res.json({
       message: 'Successfully registered for event',
@@ -1870,6 +3325,20 @@ app.delete('/events/:id/register', requireAuth, async (req, res) => {
         }
       }
     });
+
+    // Remove event from user's personal calendar
+    try {
+      await prisma.personalCalendarEvent.deleteMany({
+        where: {
+          userId: userId!,
+          type: 'event-registration',
+          relatedId: registration.id
+        }
+      });
+    } catch (calendarErr) {
+      console.error('Failed to remove event from calendar:', calendarErr);
+      // Continue even if calendar removal fails
+    }
 
     res.json({ message: 'Successfully unregistered from event' });
   } catch (err) {
@@ -2771,94 +4240,104 @@ function analyzeThreatAnswers(answers: string[], scenario: any) {
 
 // SQL quiz validation
 app.post('/games/sql-quiz', async (req, res) => {
-  const { query, challengeId, moduleId } = req.body as { query: string, challengeId: string, moduleId?: string };
+  const { query, challengeId, moduleId, questions } = req.body as { 
+    query: string, 
+    challengeId: string, 
+    moduleId?: string,
+    questions?: Array<{ question: string, answer: string }>
+  };
 
   if (!query || typeof query !== 'string') {
     return res.status(400).json({ error: 'Invalid query data' });
   }
 
-  if (!challengeId) {
-    return res.status(400).json({ error: 'No challenge specified' });
-  }
-
   try {
-    // Define SQL challenges with test databases
+    // Simple validation: if questions provided from frontend, validate against those
+    if (questions && questions.length > 0) {
+      // Normalize both user query and expected answers for comparison
+      const normalizeSQL = (sql: string) => {
+        return sql
+          .toLowerCase()
+          .replace(/\s+/g, ' ')
+          .replace(/;\s*$/, '')
+          .trim();
+      };
+
+      const userQueryNormalized = normalizeSQL(query);
+      
+      // Check if user's query matches any of the expected answers
+      const matchingQuestion = questions.find(q => {
+        const expectedNormalized = normalizeSQL(q.answer);
+        return userQueryNormalized === expectedNormalized;
+      });
+
+      if (matchingQuestion) {
+        return res.json({
+          result: '✅ Correct! Your SQL query matches the expected answer.',
+          score: 100,
+          maxScore: 100,
+          passed: true,
+          message: 'Perfect match!',
+          details: {
+            queryValid: true,
+            resultsCorrect: true,
+            executionTime: '0ms',
+            matchedQuestion: matchingQuestion.question
+          }
+        });
+      } else {
+        return res.json({
+          result: '❌ Query doesn\'t match the expected answer. Review the question and try again.',
+          score: 0,
+          maxScore: 100,
+          passed: false,
+          message: 'Try again',
+          details: {
+            queryValid: true,
+            resultsCorrect: false,
+            hint: 'Make sure your query syntax matches the expected format exactly.'
+          }
+        });
+      }
+    }
+
+    // Fallback: Use hardcoded challenges if no questions provided (backward compatibility)
     const challenges: Record<string, any> = {
       'basic-select': {
         title: 'Basic SELECT Query',
-        description: 'Write a query to select all employees with salary > 50000',
-        schema: {
-          employees: [
-            { id: 1, name: 'John Doe', salary: 60000, department: 'IT' },
-            { id: 2, name: 'Jane Smith', salary: 55000, department: 'HR' },
-            { id: 3, name: 'Bob Johnson', salary: 45000, department: 'IT' },
-            { id: 4, name: 'Alice Brown', salary: 70000, department: 'Finance' }
-          ]
-        },
-        expectedResult: [
-          { id: 1, name: 'John Doe', salary: 60000, department: 'IT' },
-          { id: 2, name: 'Jane Smith', salary: 55000, department: 'HR' },
-          { id: 4, name: 'Alice Brown', salary: 70000, department: 'Finance' }
+        description: 'Write a query to select all columns from the users table',
+        correctAnswers: [
+          'SELECT * FROM users;',
+          'SELECT * FROM users'
         ],
         difficulty: 'beginner'
       },
       'join-query': {
         title: 'JOIN Query Challenge',
-        description: 'Write a query to get employee names with their department names',
-        schema: {
-          employees: [
-            { id: 1, name: 'John Doe', dept_id: 1 },
-            { id: 2, name: 'Jane Smith', dept_id: 2 },
-            { id: 3, name: 'Bob Johnson', dept_id: 1 }
-          ],
-          departments: [
-            { id: 1, name: 'Information Technology' },
-            { id: 2, name: 'Human Resources' },
-            { id: 3, name: 'Finance' }
-          ]
-        },
-        expectedResult: [
-          { employee_name: 'John Doe', department_name: 'Information Technology' },
-          { employee_name: 'Jane Smith', department_name: 'Human Resources' },
-          { employee_name: 'Bob Johnson', department_name: 'Information Technology' }
+        description: 'Select users and their orders using an INNER JOIN',
+        correctAnswers: [
+          'SELECT * FROM users INNER JOIN orders ON users.id = orders.user_id;',
+          'SELECT * FROM users INNER JOIN orders ON users.id = orders.user_id'
         ],
         difficulty: 'intermediate'
       },
       'aggregation-query': {
         title: 'Aggregation Query',
-        description: 'Write a query to get average salary by department',
-        schema: {
-          employees: [
-            { id: 1, name: 'John', salary: 60000, dept: 'IT' },
-            { id: 2, name: 'Jane', salary: 55000, dept: 'HR' },
-            { id: 3, name: 'Bob', salary: 70000, dept: 'IT' },
-            { id: 4, name: 'Alice', salary: 65000, dept: 'HR' },
-            { id: 5, name: 'Charlie', salary: 50000, dept: 'Finance' }
-          ]
-        },
-        expectedResult: [
-          { dept: 'IT', avg_salary: 65000 },
-          { dept: 'HR', avg_salary: 60000 },
-          { dept: 'Finance', avg_salary: 50000 }
+        description: 'Count the total number of users with role "admin"',
+        correctAnswers: [
+          'SELECT COUNT(*) FROM users WHERE role = "admin";',
+          'SELECT COUNT(*) FROM users WHERE role = "admin"',
+          'SELECT COUNT(*) FROM users WHERE role = \'admin\';',
+          'SELECT COUNT(*) FROM users WHERE role = \'admin\''
         ],
         difficulty: 'intermediate'
       },
       'subquery-challenge': {
         title: 'Subquery Challenge',
-        description: 'Find employees who earn more than the average salary in their department',
-        schema: {
-          employees: [
-            { id: 1, name: 'John', salary: 70000, dept: 'IT' },
-            { id: 2, name: 'Jane', salary: 55000, dept: 'HR' },
-            { id: 3, name: 'Bob', salary: 60000, dept: 'IT' },
-            { id: 4, name: 'Alice', salary: 65000, dept: 'HR' },
-            { id: 5, name: 'Charlie', salary: 50000, dept: 'Finance' },
-            { id: 6, name: 'Diana', salary: 45000, dept: 'Finance' }
-          ]
-        },
-        expectedResult: [
-          { id: 1, name: 'John', salary: 70000, dept: 'IT' },
-          { id: 4, name: 'Alice', salary: 65000, dept: 'HR' }
+        description: 'Write a query using a CTE to find users who made more than 5 orders',
+        correctAnswers: [
+          'WITH user_orders AS (SELECT user_id, COUNT(*) as count FROM orders GROUP BY user_id) SELECT * FROM users WHERE id IN (SELECT user_id FROM user_orders WHERE count > 5);',
+          'WITH user_orders AS (SELECT user_id, COUNT(*) as count FROM orders GROUP BY user_id) SELECT * FROM users WHERE id IN (SELECT user_id FROM user_orders WHERE count > 5)'
         ],
         difficulty: 'advanced'
       }
@@ -2869,25 +4348,37 @@ app.post('/games/sql-quiz', async (req, res) => {
       return res.status(400).json({ error: 'Invalid challenge ID' });
     }
 
-    // Execute and validate the SQL query
-    const validation = validateSQLQuery(query.trim(), challenge);
+    // Normalize and check against correct answers
+    const normalizeSQL = (sql: string) => {
+      return sql
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .replace(/;\s*$/, '')
+        .trim();
+    };
+
+    const userQueryNormalized = normalizeSQL(query);
+    const isCorrect = challenge.correctAnswers.some((answer: string) => 
+      normalizeSQL(answer) === userQueryNormalized
+    );
 
     const result = {
-      result: validation.feedback,
-      score: validation.score,
+      result: isCorrect 
+        ? '✅ Correct! Your SQL query is perfect.' 
+        : '❌ Query doesn\'t match the expected answer. Review the question and try again.',
+      score: isCorrect ? 100 : 0,
       maxScore: 100,
-      passed: validation.score >= 70,
-      message: validation.message,
+      passed: isCorrect,
+      message: isCorrect ? 'Perfect match!' : 'Try again',
       details: {
-        queryValid: validation.queryValid,
-        resultsCorrect: validation.resultsCorrect,
-        executionTime: validation.executionTime,
+        queryValid: true,
+        resultsCorrect: isCorrect,
+        executionTime: '0ms',
         difficulty: challenge.difficulty
       },
       challenge: {
         title: challenge.title,
-        description: challenge.description,
-        schema: challenge.schema
+        description: challenge.description
       }
     };
 
@@ -3273,12 +4764,40 @@ app.post('/games/puzzle', async (req, res) => {
         correctAnswer: 'COMPUTER',
         difficulty: 'easy'
       },
+      'word-scramble-2': {
+        title: 'Word Scramble',
+        description: 'Unscramble these letters: THNOPY',
+        type: 'word',
+        correctAnswer: 'PYTHON',
+        difficulty: 'easy'
+      },
+      'word-scramble-3': {
+        title: 'Tech Term Scramble',
+        description: 'Unscramble these letters: AATSEABD',
+        type: 'word',
+        correctAnswer: 'DATABASE',
+        difficulty: 'medium'
+      },
+      'word-scramble-4': {
+        title: 'Programming Scramble',
+        description: 'Unscramble these letters: AVASCJIRTP',
+        type: 'word',
+        correctAnswer: 'JAVASCRIPT',
+        difficulty: 'medium'
+      },
+      'word-scramble-5': {
+        title: 'Complex Tech Term',
+        description: 'Unscramble these letters: MECIHAN NLGAIRNE',
+        type: 'word',
+        correctAnswer: 'MACHINE LEARNING',
+        difficulty: 'hard'
+      },
       'number-puzzle': {
         title: 'Number Puzzle',
         description: 'Arrange [1,2,3,4,5] to make equation: _ + _ = _ × _ - _',
         type: 'number',
-        correctAnswer: '4+5=3×2+1', // 4+5=9, 3×2=6, 6+1=7... let's fix: 5+4=3×2+3 (5+4=9, 3×2=6, 6+3=9)
-        possibleAnswers: ['5+4=3×2+3', '4+5=3×2+3', '3+6=9×1+0'], // Allow multiple valid solutions
+        correctAnswer: '5+4=3×2+3',
+        possibleAnswers: ['5+4=3×2+3', '4+5=3×2+3'],
         difficulty: 'medium'
       },
       'sliding-tile': {
@@ -3312,15 +4831,15 @@ app.post('/games/puzzle', async (req, res) => {
 
     // Validate based on puzzle type
     if (challenge.type === 'word') {
-      const userAnswer = String(solution).trim().toUpperCase();
-      const correctAnswer = String(challenge.correctAnswer).toUpperCase();
+      const userAnswer = String(solution).trim().toUpperCase().replace(/\s+/g, ' ');
+      const correctAnswer = String(challenge.correctAnswer).toUpperCase().replace(/\s+/g, ' ');
       isCorrect = userAnswer === correctAnswer;
       
       if (isCorrect) {
         result += `✅ Perfect! You unscrambled it correctly: ${challenge.correctAnswer}\n`;
       } else {
         result += `❌ Not quite. Your answer "${solution}" is incorrect.\n`;
-        result += `💡 Correct answer: ${challenge.correctAnswer}\n`;
+        result += `💡 Hint: The letters form a tech-related word or phrase.\n`;
       }
     } else if (challenge.type === 'number') {
       const userAnswer = String(solution).trim().replace(/\s/g, '');
@@ -3385,7 +4904,12 @@ app.post('/games/puzzle', async (req, res) => {
 
 // ==================== TRIVIA GAME ENDPOINT ====================
 app.post('/games/trivia', async (req, res) => {
-  const { answers, challengeId, moduleId } = req.body as { answers: number[]; challengeId: string; moduleId?: string };
+  const { answers, challengeId, moduleId, questions: gameQuestions } = req.body as { 
+    answers: number[]; 
+    challengeId: string; 
+    moduleId?: string;
+    questions?: any[];
+  };
 
   if (!answers || !Array.isArray(answers)) {
     return res.status(400).json({ error: 'Invalid answers data' });
@@ -3396,98 +4920,109 @@ app.post('/games/trivia', async (req, res) => {
   }
 
   try {
-    // Define trivia challenges with multiple questions
-    const challenges: Record<string, any> = {
-      'programming-basics': {
-        title: 'Programming Basics Trivia',
-        questions: [
-          {
-            question: 'What does HTML stand for?',
-            options: ['Hyper Text Markup Language', 'High Tech Modern Language', 'Home Tool Markup Language', 'Hyperlinks and Text Markup Language'],
-            correctAnswer: 0
-          },
-          {
-            question: 'Which language is known as the "language of the web"?',
-            options: ['Python', 'JavaScript', 'Java', 'C++'],
-            correctAnswer: 1
-          },
-          {
-            question: 'What is the purpose of CSS?',
-            options: ['Programming logic', 'Styling web pages', 'Database management', 'Server configuration'],
-            correctAnswer: 1
-          }
-        ],
-        difficulty: 'easy'
-      },
-      'networking-fundamentals': {
-        title: 'Networking Fundamentals',
-        questions: [
-          {
-            question: 'What does IP stand for?',
-            options: ['Internet Protocol', 'Internal Process', 'Integrated Platform', 'Interface Programming'],
-            correctAnswer: 0
-          },
-          {
-            question: 'What is the default port for HTTPS?',
-            options: ['80', '8080', '443', '22'],
-            correctAnswer: 2
-          },
-          {
-            question: 'What layer of the OSI model does HTTP operate at?',
-            options: ['Physical', 'Network', 'Transport', 'Application'],
-            correctAnswer: 3
-          }
-        ],
-        difficulty: 'medium'
-      },
-      'cybersecurity-basics': {
-        title: 'Cybersecurity Basics',
-        questions: [
-          {
-            question: 'What is phishing?',
-            options: ['A type of virus', 'A social engineering attack', 'A firewall technique', 'A password manager'],
-            correctAnswer: 1
-          },
-          {
-            question: 'What does VPN stand for?',
-            options: ['Virtual Private Network', 'Very Private Network', 'Verified Public Network', 'Virtual Public Node'],
-            correctAnswer: 0
-          },
-          {
-            question: 'What is two-factor authentication?',
-            options: ['Using two passwords', 'A security method requiring two forms of verification', 'Logging in twice', 'Using two devices'],
-            correctAnswer: 1
-          }
-        ],
-        difficulty: 'easy'
-      },
-      'database-concepts': {
-        title: 'Database Concepts',
-        questions: [
-          {
-            question: 'What does SQL stand for?',
-            options: ['Structured Query Language', 'Simple Question Language', 'Standard Query Logic', 'System Query Language'],
-            correctAnswer: 0
-          },
-          {
-            question: 'What is a primary key?',
-            options: ['A password', 'A unique identifier for a record', 'The first column', 'An encryption key'],
-            correctAnswer: 1
-          },
-          {
-            question: 'Which is NOT a type of JOIN in SQL?',
-            options: ['INNER JOIN', 'LEFT JOIN', 'MIDDLE JOIN', 'RIGHT JOIN'],
-            correctAnswer: 2
-          }
-        ],
-        difficulty: 'medium'
-      }
-    };
-
-    const challenge = challenges[challengeId];
+    let challenge: any;
     
-    if (!challenge) {
-      return res.status(404).json({ error: 'Challenge not found' });
+    // If questions are provided from the frontend (from game content), use those
+    if (gameQuestions && gameQuestions.length > 0) {
+      challenge = {
+        title: 'Trivia Challenge',
+        questions: gameQuestions,
+        difficulty: 'medium'
+      };
+    } else {
+      // Fallback to hardcoded questions for backward compatibility
+      const challenges: Record<string, any> = {
+        'programming-basics': {
+          title: 'Programming Basics Trivia',
+          questions: [
+            {
+              question: 'What does HTML stand for?',
+              options: ['Hyper Text Markup Language', 'High Tech Modern Language', 'Home Tool Markup Language', 'Hyperlinks and Text Markup Language'],
+              correctAnswer: 0
+            },
+            {
+              question: 'Which language is known as the "language of the web"?',
+              options: ['Python', 'JavaScript', 'Java', 'C++'],
+              correctAnswer: 1
+            },
+            {
+              question: 'What is the purpose of CSS?',
+              options: ['Programming logic', 'Styling web pages', 'Database management', 'Server configuration'],
+              correctAnswer: 1
+            }
+          ],
+          difficulty: 'easy'
+        },
+        'networking-fundamentals': {
+          title: 'Networking Fundamentals',
+          questions: [
+            {
+              question: 'What does IP stand for?',
+              options: ['Internet Protocol', 'Internal Process', 'Integrated Platform', 'Interface Programming'],
+              correctAnswer: 0
+            },
+            {
+              question: 'What is the default port for HTTPS?',
+              options: ['80', '8080', '443', '22'],
+              correctAnswer: 2
+            },
+            {
+              question: 'What layer of the OSI model does HTTP operate at?',
+              options: ['Physical', 'Network', 'Transport', 'Application'],
+              correctAnswer: 3
+            }
+          ],
+          difficulty: 'medium'
+        },
+        'cybersecurity-basics': {
+          title: 'Cybersecurity Basics',
+          questions: [
+            {
+              question: 'What is phishing?',
+              options: ['A type of virus', 'A social engineering attack', 'A firewall technique', 'A password manager'],
+              correctAnswer: 1
+            },
+            {
+              question: 'What does VPN stand for?',
+              options: ['Virtual Private Network', 'Very Private Network', 'Verified Public Network', 'Virtual Public Node'],
+              correctAnswer: 0
+            },
+            {
+              question: 'What is two-factor authentication?',
+              options: ['Using two passwords', 'A security method requiring two forms of verification', 'Logging in twice', 'Using two devices'],
+              correctAnswer: 1
+            }
+          ],
+          difficulty: 'easy'
+        },
+        'database-concepts': {
+          title: 'Database Concepts',
+          questions: [
+            {
+              question: 'What does SQL stand for?',
+              options: ['Structured Query Language', 'Simple Question Language', 'Standard Query Logic', 'System Query Language'],
+              correctAnswer: 0
+            },
+            {
+              question: 'What is a primary key?',
+              options: ['A password', 'A unique identifier for a record', 'The first column', 'An encryption key'],
+              correctAnswer: 1
+            },
+            {
+              question: 'Which is NOT a type of JOIN in SQL?',
+              options: ['INNER JOIN', 'LEFT JOIN', 'MIDDLE JOIN', 'RIGHT JOIN'],
+              correctAnswer: 2
+            }
+          ],
+          difficulty: 'medium'
+        }
+      };
+
+      challenge = challenges[challengeId];
+      
+      if (!challenge) {
+        return res.status(404).json({ error: 'Challenge not found' });
+      }
     }
 
     // Validate answers
@@ -3620,7 +5155,7 @@ app.get('/sessions', requireAuth, async (req, res) => {
 
     // Fetch user details for each session
     const sessionsWithDetails = await Promise.all(
-      sessions.map(async (session) => {
+      sessions.map(async (session: any) => {
         const mentor = await prisma.user.findUnique({
           where: { id: session.mentorId },
           select: { id: true, name: true, email: true }
@@ -3652,10 +5187,7 @@ app.get('/students', requireAuth, async (req, res) => {
 
     const students = await prisma.user.findMany({
       where: {
-        OR: [
-          { role: 'student' },
-          { role: 'career_switcher' }
-        ]
+        role: 'student'
       },
       select: {
         id: true,
@@ -3682,7 +5214,7 @@ app.get('/students', requireAuth, async (req, res) => {
 
     // Count sessions for each student
     const studentsWithSessions = await Promise.all(
-      students.map(async (student) => {
+      students.map(async (student: any) => {
         const sessionCount = await prisma.session.count({
           where: {
             studentId: student.id,
@@ -3714,8 +5246,36 @@ app.post('/sessions', requireAuth, async (req, res) => {
 
     // Validate student exists
     const student = await prisma.user.findUnique({ where: { id: studentId } });
-    if (!student || (student.role !== 'student' && student.role !== 'career_switcher')) {
+    if (!student || student.role !== 'student') {
       return res.status(404).json({ error: 'Student not found' });
+    }
+
+    // Check for calendar conflicts for mentor
+    const mentorConflict = await checkCalendarConflicts(
+      userId,
+      new Date(startTime),
+      new Date(endTime)
+    );
+
+    if (mentorConflict.hasConflict) {
+      return res.status(409).json({ 
+        error: 'Schedule conflict', 
+        details: mentorConflict.conflictDetails 
+      });
+    }
+
+    // Check for calendar conflicts for student
+    const studentConflict = await checkCalendarConflicts(
+      studentId,
+      new Date(startTime),
+      new Date(endTime)
+    );
+
+    if (studentConflict.hasConflict) {
+      return res.status(409).json({ 
+        error: 'Student has a schedule conflict', 
+        details: studentConflict.conflictDetails 
+      });
     }
 
     const session = await prisma.session.create({
@@ -3723,6 +5283,7 @@ app.post('/sessions', requireAuth, async (req, res) => {
         mentorId: userId,
         studentId,
         title,
+        topic: title || 'Session',
         description: description || '',
         startTime: new Date(startTime),
         endTime: new Date(endTime),
@@ -3730,6 +5291,59 @@ app.post('/sessions', requireAuth, async (req, res) => {
         status: 'scheduled'
       }
     });
+
+    // Auto-add session to both mentor and student calendars
+    try {
+      const calendarTitle = `Session: ${title}`;
+      const calendarDescription = `${description || ''}\nMeeting Link: ${meetingLink || 'N/A'}`;
+
+      // Add to mentor's calendar
+      await prisma.personalCalendarEvent.create({
+        data: {
+          userId: userId,
+          title: calendarTitle,
+          description: calendarDescription,
+          startTime: new Date(startTime),
+          endTime: new Date(endTime),
+          isAllDay: false,
+          type: 'session',
+          relatedId: session.id
+        }
+      });
+
+      // Add to student's calendar
+      await prisma.personalCalendarEvent.create({
+        data: {
+          userId: studentId,
+          title: calendarTitle,
+          description: calendarDescription,
+          startTime: new Date(startTime),
+          endTime: new Date(endTime),
+          isAllDay: false,
+          type: 'session',
+          relatedId: session.id
+        }
+      });
+    } catch (calendarErr) {
+      console.error('Failed to add session to calendars:', calendarErr);
+      // Continue even if calendar addition fails
+    }
+
+    // Create notification for student
+    try {
+      await prisma.notification.create({
+        data: {
+          userId: studentId,
+          type: 'session_created',
+          title: 'New Session Scheduled',
+          message: `${user.name} has scheduled a session with you: "${title}" on ${new Date(startTime).toLocaleDateString()} at ${new Date(startTime).toLocaleTimeString()}`,
+          relatedId: session.id
+        }
+      });
+    } catch (notifErr) {
+      console.error('Failed to create notification:', notifErr);
+      // Continue even if notification creation fails
+    }
 
     res.status(201).json({ session });
   } catch (err) {
@@ -3791,10 +5405,526 @@ app.delete('/sessions/:id', requireAuth, async (req, res) => {
 
     await prisma.session.delete({ where: { id } });
 
+    // Remove session from both mentor and student calendars
+    try {
+      await prisma.personalCalendarEvent.deleteMany({
+        where: {
+          type: 'session',
+          relatedId: session.id
+        }
+      });
+    } catch (calendarErr) {
+      console.error('Failed to remove session from calendars:', calendarErr);
+      // Continue even if calendar removal fails
+    }
+
     res.json({ message: 'Session deleted successfully' });
   } catch (err) {
     console.error('Delete session error:', err);
     res.status(500).json({ error: 'Failed to delete session' });
+  }
+});
+
+// Get a student's schedule/calendar (all their sessions)
+app.get('/students/:studentId/schedule', requireAuth, async (req, res) => {
+  try {
+    const userId = req.userId!;
+    const { studentId } = req.params;
+    
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    
+    if (!user || user.role !== 'IT Professional') {
+      return res.status(403).json({ error: 'Only IT Professionals can view student schedules' });
+    }
+
+    // Get all sessions for this student
+    const sessions = await prisma.session.findMany({
+      where: {
+        studentId: studentId,
+        status: { in: ['scheduled', 'completed'] } // Only show scheduled and completed sessions
+      },
+      orderBy: { startTime: 'asc' }
+    });
+
+    // Get mentor details for each session
+    const sessionsWithMentors = await Promise.all(
+      sessions.map(async (session: any) => {
+        const mentor = await prisma.user.findUnique({
+          where: { id: session.mentorId },
+          select: { id: true, name: true, email: true }
+        });
+        return { ...session, mentor };
+      })
+    );
+
+    res.json({ sessions: sessionsWithMentors });
+  } catch (err) {
+    console.error('Get student schedule error:', err);
+    res.status(500).json({ error: 'Failed to fetch student schedule' });
+  }
+});
+
+// ==================== SESSION REQUEST ENDPOINTS ====================
+
+// Student requests a session with a mentor
+app.post('/session-requests', requireAuth, async (req, res) => {
+  try {
+    const userId = req.userId!;
+    const { mentorId, message } = req.body;
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    
+    if (!user || (user.role !== 'student' && user.role !== 'career_switcher')) {
+      return res.status(403).json({ error: 'Only students can request sessions' });
+    }
+
+    // Validate mentor exists
+    const mentor = await prisma.user.findUnique({ where: { id: mentorId } });
+    if (!mentor || mentor.role !== 'IT Professional') {
+      return res.status(404).json({ error: 'Mentor not found' });
+    }
+
+    // Check if there's already a pending request
+    const existingRequest = await prisma.sessionRequest.findFirst({
+      where: {
+        studentId: userId,
+        mentorId,
+        status: 'pending'
+      }
+    });
+
+    if (existingRequest) {
+      return res.status(400).json({ error: 'You already have a pending request with this mentor' });
+    }
+
+    const sessionRequest = await prisma.sessionRequest.create({
+      data: {
+        studentId: userId,
+        mentorId,
+        message: message || '',
+        status: 'pending'
+      }
+    });
+
+    res.status(201).json({ sessionRequest });
+  } catch (err) {
+    console.error('Create session request error:', err);
+    res.status(500).json({ error: 'Failed to create session request' });
+  }
+});
+
+// Get session requests for a mentor (IT Professional)
+app.get('/session-requests/mentor', requireAuth, async (req, res) => {
+  try {
+    const userId = req.userId!;
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    
+    if (!user || user.role !== 'IT Professional') {
+      return res.status(403).json({ error: 'Only IT Professionals can view session requests' });
+    }
+
+    const requests = await prisma.sessionRequest.findMany({
+      where: { mentorId: userId },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    // Fetch student details for each request
+    const requestsWithDetails = await Promise.all(
+      requests.map(async (request: any) => {
+        const student = await prisma.user.findUnique({
+          where: { id: request.studentId },
+          select: { 
+            id: true, 
+            name: true, 
+            email: true, 
+            role: true,
+            bio: true,
+            xp: true
+          }
+        });
+        return { ...request, student };
+      })
+    );
+
+    res.json({ requests: requestsWithDetails });
+  } catch (err) {
+    console.error('Get session requests error:', err);
+    res.status(500).json({ error: 'Failed to fetch session requests' });
+  }
+});
+
+// Get session requests for a student
+app.get('/session-requests/student', requireAuth, async (req, res) => {
+  try {
+    const userId = req.userId!;
+    
+    const requests = await prisma.sessionRequest.findMany({
+      where: { studentId: userId },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    // Fetch mentor details for each request
+    const requestsWithDetails = await Promise.all(
+      requests.map(async (request: any) => {
+        const mentor = await prisma.user.findUnique({
+          where: { id: request.mentorId },
+          select: { 
+            id: true, 
+            name: true, 
+            email: true, 
+            role: true,
+            bio: true
+          }
+        });
+        return { ...request, mentor };
+      })
+    );
+
+    res.json({ requests: requestsWithDetails });
+  } catch (err) {
+    console.error('Get student session requests error:', err);
+    res.status(500).json({ error: 'Failed to fetch session requests' });
+  }
+});
+
+// Update session request status (approve/reject)
+app.put('/session-requests/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = req.userId!;
+    const { id } = req.params;
+    const { status } = req.body;
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    
+    if (!user || user.role !== 'IT Professional') {
+      return res.status(403).json({ error: 'Only IT Professionals can update session requests' });
+    }
+
+    const request = await prisma.sessionRequest.findUnique({ where: { id } });
+    
+    if (!request) {
+      return res.status(404).json({ error: 'Session request not found' });
+    }
+
+    if (request.mentorId !== userId) {
+      return res.status(403).json({ error: 'You can only update your own session requests' });
+    }
+
+    const updated = await prisma.sessionRequest.update({
+      where: { id },
+      data: {
+        status,
+        updatedAt: new Date()
+      }
+    });
+
+    res.json({ request: updated });
+  } catch (err) {
+    console.error('Update session request error:', err);
+    res.status(500).json({ error: 'Failed to update session request' });
+  }
+});
+
+// Delete session request
+app.delete('/session-requests/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = req.userId!;
+    const { id } = req.params;
+
+    const request = await prisma.sessionRequest.findUnique({ where: { id } });
+    
+    if (!request) {
+      return res.status(404).json({ error: 'Session request not found' });
+    }
+
+    // Student can delete their own request, or mentor can delete requests to them
+    if (request.studentId !== userId && request.mentorId !== userId) {
+      return res.status(403).json({ error: 'You can only delete your own session requests' });
+    }
+
+    await prisma.sessionRequest.delete({ where: { id } });
+
+    res.json({ message: 'Session request deleted successfully' });
+  } catch (err) {
+    console.error('Delete session request error:', err);
+    res.status(500).json({ error: 'Failed to delete session request' });
+  }
+});
+
+// ==================== PERSONAL CALENDAR ENDPOINTS ====================
+
+// Get user's personal calendar events
+app.get('/calendar/events', requireAuth, async (req, res) => {
+  try {
+    const userId = req.userId!;
+
+    const events = await prisma.personalCalendarEvent.findMany({
+      where: { userId },
+      orderBy: { startTime: 'asc' }
+    });
+
+    res.json({ events });
+  } catch (err) {
+    console.error('Get calendar events error:', err);
+    res.status(500).json({ error: 'Failed to fetch calendar events' });
+  }
+});
+
+// Add a manual event to personal calendar
+app.post('/calendar/events', requireAuth, async (req, res) => {
+  try {
+    const userId = req.userId!;
+    const { title, description, startTime, endTime, isAllDay } = req.body;
+
+    if (!title || !startTime || !endTime) {
+      return res.status(400).json({ error: 'Title, start time, and end time are required' });
+    }
+
+    // Check for calendar conflicts
+    const userConflict = await checkCalendarConflicts(
+      userId,
+      new Date(startTime),
+      new Date(endTime)
+    );
+
+    if (userConflict.hasConflict) {
+      return res.status(409).json({ 
+        error: 'Schedule conflict', 
+        details: userConflict.conflictDetails 
+      });
+    }
+
+    const event = await prisma.personalCalendarEvent.create({
+      data: {
+        userId,
+        title,
+        description: description || '',
+        startTime: new Date(startTime),
+        endTime: new Date(endTime),
+        isAllDay: isAllDay || false,
+        type: 'personal'
+      }
+    });
+
+    res.status(201).json({ event });
+  } catch (err) {
+    console.error('Create calendar event error:', err);
+    res.status(500).json({ error: 'Failed to create calendar event' });
+  }
+});
+
+// Delete a personal calendar event
+app.delete('/calendar/events/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = req.userId!;
+    const { id } = req.params;
+
+    const event = await prisma.personalCalendarEvent.findUnique({ where: { id } });
+    
+    if (!event) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    if (event.userId !== userId) {
+      return res.status(403).json({ error: 'You can only delete your own events' });
+    }
+
+    await prisma.personalCalendarEvent.delete({ where: { id } });
+
+    res.json({ message: 'Event deleted successfully' });
+  } catch (err) {
+    console.error('Delete calendar event error:', err);
+    res.status(500).json({ error: 'Failed to delete calendar event' });
+  }
+});
+
+// Check if a time slot is available (not conflicting with calendar events or sessions)
+app.post('/calendar/check-availability', requireAuth, async (req, res) => {
+  try {
+    const userId = req.userId!;
+    const { startTime, endTime, studentId } = req.body;
+
+    if (!startTime || !endTime) {
+      return res.status(400).json({ error: 'Start time and end time are required' });
+    }
+
+    const start = new Date(startTime);
+    const end = new Date(endTime);
+
+    // Check personal calendar events
+    const calendarConflicts = await prisma.personalCalendarEvent.findMany({
+      where: {
+        userId: studentId || userId,
+        OR: [
+          {
+            AND: [
+              { startTime: { lte: start } },
+              { endTime: { gt: start } }
+            ]
+          },
+          {
+            AND: [
+              { startTime: { lt: end } },
+              { endTime: { gte: end } }
+            ]
+          },
+          {
+            AND: [
+              { startTime: { gte: start } },
+              { endTime: { lte: end } }
+            ]
+          }
+        ]
+      }
+    });
+
+    // Check scheduled sessions
+    const sessionConflicts = await prisma.session.findMany({
+      where: {
+        OR: [
+          { studentId: studentId || userId },
+          { mentorId: studentId || userId }
+        ],
+        status: 'scheduled',
+        AND: [
+          {
+            OR: [
+              {
+                AND: [
+                  { startTime: { lte: start } },
+                  { endTime: { gt: start } }
+                ]
+              },
+              {
+                AND: [
+                  { startTime: { lt: end } },
+                  { endTime: { gte: end } }
+                ]
+              },
+              {
+                AND: [
+                  { startTime: { gte: start } },
+                  { endTime: { lte: end } }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    });
+
+    const conflicts = [
+      ...calendarConflicts.map((e: any) => ({ type: 'calendar', ...e })),
+      ...sessionConflicts.map((s: any) => ({ type: 'session', ...s }))
+    ];
+
+    res.json({ 
+      available: conflicts.length === 0,
+      conflicts
+    });
+  } catch (err) {
+    console.error('Check availability error:', err);
+    res.status(500).json({ error: 'Failed to check availability' });
+  }
+});
+
+// ============== NOTIFICATION ENDPOINTS ==============
+
+// Get notifications for a user
+app.get('/notifications', requireAuth, async (req, res) => {
+  try {
+    const userId = req.userId!;
+    const { unreadOnly } = req.query;
+
+    const where: any = { userId };
+    
+    // Filter for unread only if requested
+    if (unreadOnly === 'true') {
+      where.read = false;
+    }
+
+    const notifications = await prisma.notification.findMany({
+      where,
+      orderBy: { createdAt: 'desc' }
+    });
+
+    res.json({ notifications });
+  } catch (err) {
+    console.error('Get notifications error:', err);
+    res.status(500).json({ error: 'Failed to get notifications' });
+  }
+});
+
+// Create a new notification
+app.post('/notifications', requireAuth, async (req, res) => {
+  try {
+    const { userId, type, title, message } = req.body;
+
+    if (!userId || !type || !message) {
+      return res.status(400).json({ error: 'userId, type, and message are required' });
+    }
+
+    const notification = await prisma.notification.create({
+      data: {
+        userId,
+        type,
+        title: title || 'Notification',
+        message,
+        read: false
+      }
+    });
+
+    res.status(201).json({ notification });
+  } catch (err) {
+    console.error('Create notification error:', err);
+    res.status(500).json({ error: 'Failed to create notification' });
+  }
+});
+
+// Mark notification as read
+app.put('/notifications/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = req.userId!;
+    const { id } = req.params;
+
+    // Verify the notification belongs to the user
+    const notification = await prisma.notification.findUnique({
+      where: { id }
+    });
+
+    if (!notification || notification.userId !== userId) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+
+    const updatedNotification = await prisma.notification.update({
+      where: { id },
+      data: { read: true }
+    });
+
+    res.json({ notification: updatedNotification });
+  } catch (err) {
+    console.error('Update notification error:', err);
+    res.status(500).json({ error: 'Failed to update notification' });
+  }
+});
+
+// Mark all notifications as read
+app.put('/notifications/mark-all-read', requireAuth, async (req, res) => {
+  try {
+    const userId = req.userId!;
+
+    await prisma.notification.updateMany({
+      where: { 
+        userId,
+        read: false 
+      },
+      data: { read: true }
+    });
+
+    res.json({ message: 'All notifications marked as read' });
+  } catch (err) {
+    console.error('Mark all read error:', err);
+    res.status(500).json({ error: 'Failed to mark all as read' });
   }
 });
 
@@ -3818,7 +5948,7 @@ app.get('/sessions/mentor/:mentorId', async (req, res) => {
 
     // Fetch student names
     const sessionsWithDetails = await Promise.all(
-      sessions.map(async (session) => {
+      sessions.map(async (session: any) => {
         const student = await prisma.user.findUnique({
           where: { id: session.studentId },
           select: { name: true, email: true }
@@ -3846,7 +5976,7 @@ app.get('/sessions/student/:studentId', async (req, res) => {
 
     // Fetch mentor names
     const sessionsWithDetails = await Promise.all(
-      sessions.map(async (session) => {
+      sessions.map(async (session: any) => {
         const mentor = await prisma.user.findUnique({
           where: { id: session.mentorId },
           select: { name: true, email: true }
@@ -3894,6 +6024,7 @@ app.post('/sessions', requireAuth, async (req, res) => {
         mentorId,
         studentId,
         title,
+        topic: title || 'Session',
         description: description || '',
         startTime: new Date(startTime),
         endTime: new Date(endTime),
@@ -4065,7 +6196,7 @@ app.post('/certificates/generate', requireAuth, async (req, res) => {
       };
 
       const currentDifficulty = difficultyOrder[track.difficulty.toLowerCase()] || 0;
-      const hasHigherDifficulty = categoryTracks.some(t => 
+      const hasHigherDifficulty = categoryTracks.some((t: any) => 
         (difficultyOrder[t.difficulty.toLowerCase()] || 0) > currentDifficulty
       );
 
@@ -4106,9 +6237,14 @@ app.post('/certificates/generate', requireAuth, async (req, res) => {
       }
     });
 
+    // Award certified badge and XP bonus
+    await awardXP(userId, XP_REWARDS.CERTIFICATE, `Earned certificate: ${track.title}`);
+    await awardBadge(userId, 'certified');
+    await checkAndAwardBadges(userId);
+
     res.json({ 
       certificate,
-      message: 'Certificate generated successfully!'
+      message: 'Certificate generated successfully! 🎓 +500 XP & Certified badge earned!'
     });
 
   } catch (error) {

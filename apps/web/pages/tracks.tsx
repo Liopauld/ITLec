@@ -13,6 +13,7 @@ export default function CareerTracksPage() {
   const [error, setError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterDifficulty, setFilterDifficulty] = useState('all');
+  const [filterCategory, setFilterCategory] = useState('all');
   const [userId, setUserId] = useState<string | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<any>(null);
@@ -80,13 +81,12 @@ export default function CareerTracksPage() {
               if (!res.ok) return [track.id, { percent: 0, completed: false }] as const;
               const data = await res.json();
               const modulesCount = (track.modules?.length || 0) as number;
-              // Count games across all modules
-              const gamesCount = track.modules?.reduce((total: number, mod: any) => total + (mod.games?.length || 0), 0) || 0;
-              const totalItems = Math.max(0, modulesCount + gamesCount);
+              // Since each module contains at most one game, and completing a game marks the module complete,
+              // we should only count modules to avoid double counting
+              const totalItems = modulesCount;
               const completedModules = (data.progress?.completedModules?.length || 0) as number;
-              const completedGames = (data.progress?.completedGames?.length || 0) as number;
-              const done = Math.max(0, completedModules + completedGames);
-              const percent = totalItems > 0 ? Math.round((done / totalItems) * 100) : 100;
+              const done = completedModules;
+              const percent = totalItems > 0 ? Math.min(100, Math.round((done / totalItems) * 100)) : 100;
               return [track.id, { percent, completed: percent >= 100 }] as const;
             } catch {
               return [track.id, { percent: 0, completed: false }] as const;
@@ -254,12 +254,25 @@ export default function CareerTracksPage() {
     return icons[index % icons.length];
   };
 
+  // Extract unique categories from tracks
+  const categories = useMemo(() => {
+    const cats = new Set<string>();
+    tracks.forEach((track: any) => {
+      if (track.category) {
+        cats.add(track.category);
+      }
+    });
+    return Array.from(cats).sort();
+  }, [tracks]);
+
   const filteredTracks = tracks.filter((track: any) => {
     const matchesSearch = track.title?.toLowerCase().includes(searchQuery.toLowerCase()) || 
                          track.description?.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesDifficulty = filterDifficulty === 'all' || 
                               track.difficulty?.toLowerCase() === filterDifficulty.toLowerCase();
-    return matchesSearch && matchesDifficulty;
+    const matchesCategory = filterCategory === 'all' || 
+                           track.category === filterCategory;
+    return matchesSearch && matchesDifficulty && matchesCategory;
   });
 
   if (loading) {
@@ -417,20 +430,36 @@ export default function CareerTracksPage() {
 
           {/* Search and Filter Bar */}
           <div className="bg-gradient-to-br from-white to-gray-50 rounded-2xl p-8 shadow-xl border-2 border-gray-200 mb-8 max-w-5xl mx-auto hover:shadow-2xl transition-shadow duration-300">
-            <div className="grid md:grid-cols-2 gap-6">
+            <div className="grid md:grid-cols-3 gap-6">
               {/* Search */}
-              <div className="relative group">
+              <div className="relative group md:col-span-1">
                 <Search className="absolute left-5 top-1/2 transform -translate-y-1/2 w-6 h-6 text-gray-400 group-focus-within:text-blue-600 transition-colors" />
                 <input
                   type="text"
-                  placeholder="🔍 Search tracks by name or topic..."
+                  placeholder="🔍 Search tracks..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="w-full pl-14 pr-5 py-4 border-2 border-gray-300 rounded-xl focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 transition-all duration-300 font-medium text-gray-800 placeholder-gray-500 shadow-sm"
                 />
               </div>
 
-              {/* Filter */}
+              {/* Category Filter */}
+              <div className="relative group">
+                <Layers className="absolute left-5 top-1/2 transform -translate-y-1/2 w-6 h-6 text-gray-400 group-focus-within:text-green-600 transition-colors pointer-events-none" />
+                <select
+                  value={filterCategory}
+                  onChange={(e) => setFilterCategory(e.target.value)}
+                  className="w-full pl-14 pr-5 py-4 border-2 border-gray-300 rounded-xl focus:border-green-500 focus:outline-none focus:ring-2 focus:ring-green-200 transition-all duration-300 font-bold text-gray-800 appearance-none bg-white cursor-pointer shadow-sm hover:border-green-400"
+                >
+                  <option value="all">📂 All Categories</option>
+                  {categories.map(cat => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-5 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-500 pointer-events-none" />
+              </div>
+
+              {/* Difficulty Filter */}
               <div className="relative group">
                 <Filter className="absolute left-5 top-1/2 transform -translate-y-1/2 w-6 h-6 text-gray-400 group-focus-within:text-purple-600 transition-colors pointer-events-none" />
                 <select
@@ -449,13 +478,14 @@ export default function CareerTracksPage() {
           </div>
 
           {/* Results Info */}
-          {searchQuery || filterDifficulty !== 'all' ? (
+          {searchQuery || filterDifficulty !== 'all' || filterCategory !== 'all' ? (
             <div className="text-center mb-8">
               <div className="inline-flex items-center gap-2 bg-gradient-to-r from-blue-100 to-purple-100 px-6 py-3 rounded-full shadow-md border-2 border-blue-200">
                 <CheckCircle className="w-5 h-5 text-blue-600" />
                 <p className="text-gray-800 font-semibold">
                   Found <span className="font-extrabold text-blue-700 text-lg">{filteredTracks.length}</span> {filteredTracks.length === 1 ? 'track' : 'tracks'}
                   {searchQuery && <span className="text-purple-700"> matching <span className="font-bold">"{searchQuery}"</span></span>}
+                  {filterCategory !== 'all' && <span className="text-green-700"> in <span className="font-bold">{filterCategory}</span></span>}
                   {filterDifficulty !== 'all' && <span className="text-purple-700"> at <span className="font-bold">{filterDifficulty}</span> level</span>}
                 </p>
               </div>
@@ -662,6 +692,7 @@ export default function CareerTracksPage() {
                 onClick={() => {
                   setSearchQuery('');
                   setFilterDifficulty('all');
+                  setFilterCategory('all');
                 }}
                 className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 hover:from-blue-700 hover:via-purple-700 hover:to-pink-700 text-white px-10 py-4 rounded-2xl font-extrabold transition-all duration-500 shadow-2xl hover:shadow-xl transform hover:scale-105 inline-flex items-center gap-3 border-2 border-blue-400 text-lg"
               >

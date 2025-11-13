@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
-import { ArrowRight, Star } from 'lucide-react';
+import { ArrowRight, Star, Mail } from 'lucide-react';
 import { useUser } from '../shared/hooks/useUser';
 
 export default function Login() {
 	const [form, setForm] = useState({ email: '', password: '' });
 	const [message, setMessage] = useState('');
+	const [needsVerification, setNeedsVerification] = useState(false);
 	const [isLoading, setIsLoading] = useState(false);
 	const router = useRouter();
 	const { setUser } = useUser();
@@ -14,6 +15,7 @@ export default function Login() {
 	async function handleSubmit(e: React.FormEvent) {
 		e.preventDefault();
 		setMessage('');
+		setNeedsVerification(false);
 		setIsLoading(true);
 		const res = await fetch('http://localhost:4000/auth/login', {
 			method: 'POST',
@@ -22,47 +24,52 @@ export default function Login() {
 		});
 		const data = await res.json();
 		setIsLoading(false);
-				if (res.ok) {
-					setMessage('Login successful!');
-					if (data.token) {
-						localStorage.setItem('token', data.token);
-					}
-					if (data.user) {
-						localStorage.setItem('user', JSON.stringify(data.user));
-						localStorage.setItem('userId', data.user.id); // Store userId for assessment
-						setUser(data.user); // Update global user context
-						// Check backend for latest assessment
-						fetch(`http://localhost:4000/assessments/latest/${data.user.id}`)
-							.then(r => r.json())
-							.then(aData => {
-								if (aData.assessment && aData.assessment.scoreVector && (data.user.role === 'student' || data.user.role === 'career_switcher')) {
-									// Persist assessment in localStorage
-									localStorage.setItem('latestAssessment', JSON.stringify({
-										scoreVector: JSON.stringify(aData.assessment.scoreVector),
-										suggestedCourses: JSON.stringify(aData.assessment.suggestedCourses || []),
-										// Add other fields as needed
-									}));
-									router.push('/results');
-								} else {
-									if (data.user.role === 'student' || data.user.role === 'career_switcher') {
-										router.push('/assessment');
-									} else {
-										router.push('/dashboard');
-									}
-								}
-							})
-							.catch(() => {
-								// Fallback to normal flow if error
-								if (data.user.role === 'student' || data.user.role === 'career_switcher') {
-									router.push('/assessment');
-								} else {
-									router.push('/dashboard');
-								}
-							});
-					}
-				} else {
-					setMessage(data.error || 'Login failed');
-				}
+		
+		if (res.ok) {
+			setMessage('Login successful!');
+			if (data.token) {
+				localStorage.setItem('token', data.token);
+			}
+			if (data.user) {
+				localStorage.setItem('user', JSON.stringify(data.user));
+				localStorage.setItem('userId', data.user.id); // Store userId for assessment
+				setUser(data.user); // Update global user context
+				// Check backend for latest assessment
+				fetch(`http://localhost:4000/assessments/latest/${data.user.id}`)
+					.then(r => r.json())
+					.then(aData => {
+						if (aData.assessment && aData.assessment.scoreVector && data.user.role === 'student') {
+							// Persist assessment in localStorage
+							localStorage.setItem('latestAssessment', JSON.stringify({
+								scoreVector: JSON.stringify(aData.assessment.scoreVector),
+								suggestedCourses: JSON.stringify(aData.assessment.suggestedCourses || []),
+								// Add other fields as needed
+							}));
+							router.push('/results');
+						} else {
+							if (data.user.role === 'student') {
+								router.push('/assessment');
+							} else {
+								router.push('/dashboard');
+							}
+						}
+					})
+					.catch(() => {
+						// Fallback to normal flow if error
+						if (data.user.role === 'student') {
+							router.push('/assessment');
+						} else {
+							router.push('/dashboard');
+						}
+					});
+			}
+		} else {
+			// Check if email verification is needed
+			if (data.needsVerification || res.status === 403) {
+				setNeedsVerification(true);
+			}
+			setMessage(data.message || data.error || 'Login failed');
+		}
 	}
 
 	return (
@@ -136,9 +143,6 @@ export default function Login() {
 										Remember me
 									</label>
 								</div>
-								<Link href="/forgot-password" className="text-sm text-blue-600 hover:text-blue-500 font-medium">
-									Forgot password?
-								</Link>
 							</div>
 						</form>
 						{message && (
@@ -148,6 +152,17 @@ export default function Login() {
 									: 'bg-red-50 text-red-800 border border-red-200'
 							}`}>
 								{message}
+								{needsVerification && (
+									<div className="mt-3">
+										<Link 
+											href="/resend-verification"
+											className="inline-flex items-center gap-2 text-blue-600 hover:text-blue-700 font-semibold text-sm"
+										>
+											<Mail className="w-4 h-4" />
+											Resend Verification Email
+										</Link>
+									</div>
+								)}
 							</div>
 						)}
 					</div>

@@ -182,7 +182,12 @@ export default function Events() {
         fetchEvents();
       } else {
         const error = await response.json();
-        alert(error.error || 'Failed to register for event');
+        // Show detailed conflict information if available
+        if (response.status === 409 && error.details) {
+          alert(`Schedule Conflict: ${error.details}\n\nPlease check your calendar and choose a different event time.`);
+        } else {
+          alert(error.error || 'Failed to register for event');
+        }
       }
     } catch (err) {
       console.error('Error registering for event:', err);

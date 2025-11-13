@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/router';
-import { Users, MessageSquare, ThumbsUp, Share2, Bookmark, TrendingUp, Award, Star, Plus, Search, Filter, Send, Heart, MessageCircle, BookOpen, Code, Sparkles, Eye, Clock, ArrowRight, Image, Video, X, Upload } from 'lucide-react';
+import { Users, MessageSquare, ThumbsUp, Share2, Bookmark, TrendingUp, Award, Star, Plus, Search, Filter, Send, Heart, MessageCircle, BookOpen, Code, Sparkles, Eye, Clock, ArrowRight, Image, Video, X, Upload, Hash } from 'lucide-react';
 // ...existing code...
 
 export default function Community() {
@@ -11,6 +11,12 @@ export default function Community() {
   const [members, setMembers] = useState<any[]>([]);
   const [resources, setResources] = useState<any[]>([]);
   const [mentors, setMentors] = useState<any[]>([]);
+  const [trendingTopics, setTrendingTopics] = useState<Array<{ tag: string; count: number }>>([]);
+  const [selectedPost, setSelectedPost] = useState<any | null>(null);
+  const [showBookingModal, setShowBookingModal] = useState(false);
+  const [selectedMentor, setSelectedMentor] = useState<any | null>(null);
+  const [bookingMessage, setBookingMessage] = useState('');
+  const [bookingStatus, setBookingStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [stats, setStats] = useState({
     members: 0,
     posts: 0,
@@ -23,6 +29,11 @@ export default function Community() {
   const [selectedMedia, setSelectedMedia] = useState<File | null>(null);
   const [mediaPreview, setMediaPreview] = useState<string | null>(null);
   const [isUploadingMedia, setIsUploadingMedia] = useState(false);
+  const [showMyRequestsPanel, setShowMyRequestsPanel] = useState(false);
+  const [myRequests, setMyRequests] = useState<any[]>([]);
+  const [requestsFilter, setRequestsFilter] = useState<'pending' | 'all'>('pending');
+  const [commentText, setCommentText] = useState('');
+  const [isCommenting, setIsCommenting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:4000';
@@ -35,6 +46,7 @@ export default function Community() {
       fetchStats();
       fetchResources();
       fetchMentors();
+      fetchTrendingTopics();
     } else {
       router.replace('/login');
     }
@@ -79,6 +91,31 @@ export default function Community() {
       setMentors(data.mentors || []);
     } catch (err) {
       console.error('Failed to fetch mentors:', err);
+    }
+  };
+
+  const fetchMyRequests = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${API_BASE}/session-requests/student`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      const data = await response.json();
+      setMyRequests(data.requests || []);
+    } catch (err) {
+      console.error('Failed to fetch my requests:', err);
+    }
+  };
+
+  const fetchTrendingTopics = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/community/trending-topics`);
+      const data = await response.json();
+      setTrendingTopics(data.trendingTopics || []);
+    } catch (err) {
+      console.error('Failed to fetch trending topics:', err);
     }
   };
 
@@ -166,6 +203,11 @@ export default function Community() {
         }
       }
 
+      // Extract hashtags from content
+      const hashtagRegex = /#[\w]+/g;
+      const hashtags = newPostContent.match(hashtagRegex) || [];
+      const tags = hashtags.map(tag => tag.substring(1).toLowerCase()); // Remove # and normalize
+
       const response = await fetch(`${API_BASE}/community/posts`, {
         method: 'POST',
         headers: {
@@ -174,7 +216,7 @@ export default function Community() {
         },
         body: JSON.stringify({
           content: newPostContent.trim(),
-          tags: [], // TODO: Add tag extraction from content
+          tags: tags,
           ...(mediaData && { mediaUrl: mediaData.mediaUrl, mediaType: mediaData.mediaType })
         })
       });
@@ -184,6 +226,7 @@ export default function Community() {
         setPosts([data.post, ...posts]);
         setNewPostContent('');
         removeMedia(); // Clear media selection
+        fetchTrendingTopics(); // Refresh trending topics after new post
       } else {
         alert('Failed to create post');
       }
@@ -192,6 +235,109 @@ export default function Community() {
       alert('Error creating post');
     } finally {
       setIsPosting(false);
+    }
+  };
+
+  const handleLike = async (postId: number) => {
+    try {
+      const response = await fetch(`${API_BASE}/community/posts/${postId}/like`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        // Update posts array
+        setPosts(posts.map(post => 
+          post.id === postId 
+            ? { ...post, likes: data.likes, isLiked: data.isLiked }
+            : post
+        ));
+        // Update selected post if modal is open
+        if (selectedPost?.id === postId) {
+          setSelectedPost({ ...selectedPost, likes: data.likes, isLiked: data.isLiked });
+        }
+      }
+    } catch (err) {
+      console.error('Error liking post:', err);
+    }
+  };
+
+  const handleComment = async (postId: number) => {
+    if (!commentText.trim()) return;
+
+    setIsCommenting(true);
+    try {
+      const response = await fetch(`${API_BASE}/community/posts/${postId}/comments`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify({ text: commentText.trim() })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        // Update posts array with new comment
+        setPosts(posts.map(post => 
+          post.id === postId 
+            ? { ...post, comments: [...(post.comments || []), data.comment] }
+            : post
+        ));
+        // Update selected post if modal is open
+        if (selectedPost?.id === postId) {
+          setSelectedPost({ 
+            ...selectedPost, 
+            comments: [...(selectedPost.comments || []), data.comment] 
+          });
+        }
+        setCommentText('');
+      }
+    } catch (err) {
+      console.error('Error posting comment:', err);
+      alert('Failed to post comment');
+    } finally {
+      setIsCommenting(false);
+    }
+  };
+
+  const handleBookSession = async () => {
+    if (!selectedMentor) return;
+
+    setBookingStatus('loading');
+    try {
+      const response = await fetch(`${API_BASE}/session-requests`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify({
+          mentorId: selectedMentor.id,
+          message: bookingMessage.trim()
+        })
+      });
+
+      if (response.ok) {
+        setBookingStatus('success');
+        setTimeout(() => {
+          setShowBookingModal(false);
+          setSelectedMentor(null);
+          setBookingMessage('');
+          setBookingStatus('idle');
+        }, 2000);
+      } else {
+        const data = await response.json();
+        alert(data.error || 'Failed to request session');
+        setBookingStatus('error');
+      }
+    } catch (err) {
+      console.error('Error requesting session:', err);
+      alert('Error requesting session');
+      setBookingStatus('error');
     }
   };
 
@@ -337,7 +483,7 @@ export default function Community() {
                         <textarea
                           value={newPostContent}
                           onChange={(e) => setNewPostContent(e.target.value)}
-                          placeholder="Share your thoughts with the community..."
+                          placeholder="Share your thoughts with the community... Use #hashtags to join trending topics!"
                           className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:border-blue-400 focus:outline-none transition-colors duration-300 resize-none"
                           rows={3}
                           onKeyPress={(e) => {
@@ -347,6 +493,23 @@ export default function Community() {
                             }
                           }}
                         />
+                        
+                        {/* Hashtag hint */}
+                        {newPostContent && (
+                          <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
+                            <TrendingUp className="w-3 h-3" />
+                            <span>
+                              {(() => {
+                                const hashtagRegex = /#[\w]+/g;
+                                const hashtags = newPostContent.match(hashtagRegex) || [];
+                                if (hashtags.length > 0) {
+                                  return `${hashtags.length} hashtag${hashtags.length > 1 ? 's' : ''} detected: ${hashtags.join(', ')}`;
+                                }
+                                return 'Add hashtags (e.g., #javascript #webdev) to make your post discoverable!';
+                              })()}
+                            </span>
+                          </div>
+                        )}
 
                         {/* Media Preview */}
                         {mediaPreview && (
@@ -425,7 +588,11 @@ export default function Community() {
 
                   {/* Posts */}
                   {posts.map(post => (
-                    <div key={post.id} className="bg-white rounded-2xl p-6 shadow-lg border border-gray-100 transform transition-all duration-300 hover:shadow-2xl">
+                    <div 
+                      key={post.id} 
+                      className="bg-white rounded-2xl p-6 shadow-lg border border-gray-100 transform transition-all duration-300 hover:shadow-2xl cursor-pointer"
+                      onClick={() => setSelectedPost(post)}
+                    >
                       {/* Post Header */}
                       <div className="flex items-center gap-4 mb-4">
                         <div className="w-12 h-12 rounded-full bg-gradient-to-r from-blue-500 to-purple-500 flex items-center justify-center text-white font-bold">
@@ -440,9 +607,6 @@ export default function Community() {
                             <span>{new Date(post.createdAt).toLocaleDateString()}</span>
                           </div>
                         </div>
-                        <button className="text-gray-400 hover:text-blue-600 transition-colors duration-300">
-                          <Bookmark className="w-5 h-5" />
-                        </button>
                       </div>
 
                       {/* Post Content */}
@@ -481,19 +645,31 @@ export default function Community() {
                         ))}
                       </div>
 
-                      {/* Post Actions */}
+                      {/* Like and Comment Actions */}
                       <div className="flex items-center gap-6 pt-4 border-t border-gray-100">
-                        <button className="flex items-center gap-2 text-gray-600 hover:text-red-500 transition-colors duration-300 group">
-                          <Heart className="w-5 h-5 group-hover:scale-110 transition-transform duration-300" />
-                          <span className="font-medium">{post.likes || 0}</span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleLike(post.id);
+                          }}
+                          className={`flex items-center gap-2 transition-all duration-300 ${
+                            post.isLiked 
+                              ? 'text-red-500 hover:text-red-600' 
+                              : 'text-gray-500 hover:text-red-500'
+                          }`}
+                        >
+                          <Heart className={`w-5 h-5 ${post.isLiked ? 'fill-current' : ''}`} />
+                          <span className="text-sm font-medium">{post.likes || 0}</span>
                         </button>
-                        <button className="flex items-center gap-2 text-gray-600 hover:text-blue-500 transition-colors duration-300 group">
-                          <MessageCircle className="w-5 h-5 group-hover:scale-110 transition-transform duration-300" />
-                          <span className="font-medium">{post.comments?.length || 0}</span>
-                        </button>
-                        <button className="flex items-center gap-2 text-gray-600 hover:text-green-500 transition-colors duration-300 group">
-                          <Share2 className="w-5 h-5 group-hover:scale-110 transition-transform duration-300" />
-                          <span className="font-medium">{post.shares || 0}</span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedPost(post);
+                          }}
+                          className="flex items-center gap-2 text-gray-500 hover:text-blue-500 transition-all duration-300"
+                        >
+                          <MessageCircle className="w-5 h-5" />
+                          <span className="text-sm font-medium">{post.comments?.length || 0}</span>
                         </button>
                       </div>
                     </div>
@@ -505,7 +681,11 @@ export default function Community() {
               {activeTab === 'resources' && (
                 <>
                   {resources.map(resource => (
-                    <div key={resource.id} className="bg-white rounded-2xl p-6 shadow-lg border border-gray-100 transform transition-all duration-300 hover:shadow-2xl hover:scale-102 cursor-pointer group">
+                    <div 
+                      key={resource.id} 
+                      className="bg-white rounded-2xl p-6 shadow-lg border border-gray-100 transform transition-all duration-300 hover:shadow-2xl hover:scale-102 cursor-pointer group"
+                      onClick={() => setSelectedPost(resource)}
+                    >
                       <div className="flex items-start gap-4">
                         <div className="bg-gradient-to-r from-purple-500 to-pink-500 w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 group-hover:scale-110 group-hover:rotate-3 transition-all duration-300">
                           {resource.media && resource.media.length > 0 && resource.media[0].type === 'video' ? (
@@ -552,16 +732,6 @@ export default function Community() {
                               </span>
                             ))}
                           </div>
-                          <div className="flex items-center gap-6">
-                            <div className="flex items-center gap-2 text-gray-600">
-                              <ThumbsUp className="w-4 h-4" />
-                              <span className="font-medium">{resource.upvotes}</span>
-                            </div>
-                            <div className="flex items-center gap-2 text-gray-600">
-                              <Eye className="w-4 h-4" />
-                              <span className="font-medium">{resource.views}</span>
-                            </div>
-                          </div>
                         </div>
                         <ArrowRight className="w-5 h-5 text-gray-400 group-hover:text-purple-500 group-hover:translate-x-1 transition-all duration-300" />
                       </div>
@@ -580,6 +750,27 @@ export default function Community() {
               {/* Mentors Tab */}
               {activeTab === 'mentors' && (
                 <>
+                  {/* My Requests Button - Only for students */}
+                  {user && (user.role === 'student' || user.role === 'career_switcher') && (
+                    <div className="mb-6 flex justify-end">
+                      <button
+                        onClick={() => {
+                          fetchMyRequests();
+                          setShowMyRequestsPanel(true);
+                        }}
+                        className="relative bg-white px-4 py-3 rounded-xl shadow-md border border-gray-200 hover:shadow-lg transition-all duration-300 flex items-center gap-2"
+                      >
+                        <MessageSquare className="w-5 h-5 text-purple-600" />
+                        <span className="font-semibold text-gray-700">My Requests</span>
+                        {myRequests.filter((r: any) => r.status === 'pending').length > 0 && (
+                          <span className="absolute -top-2 -right-2 bg-yellow-500 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center">
+                            {myRequests.filter((r: any) => r.status === 'pending').length}
+                          </span>
+                        )}
+                      </button>
+                    </div>
+                  )}
+                  
                   {mentors.map(mentor => (
                     <div key={mentor.id} className="bg-white rounded-2xl p-6 shadow-lg border border-gray-100 transform transition-all duration-300 hover:shadow-2xl hover:scale-102 cursor-pointer group">
                       <div className="flex items-start gap-4">
@@ -601,22 +792,25 @@ export default function Community() {
                               </span>
                             ))}
                           </div>
-                          <div className="flex items-center gap-6 text-sm">
+                          <div className="flex items-center gap-4 text-sm text-gray-600">
                             <div className="flex items-center gap-1">
-                              <Star className="w-4 h-4 text-yellow-500 fill-current" />
-                              <span className="font-semibold">{mentor.rating}</span>
-                            </div>
-                            <div className="flex items-center gap-1 text-gray-600">
                               <Users className="w-4 h-4" />
-                              <span>{mentor.students} students</span>
+                              <span>{mentor.students || 0} students</span>
                             </div>
-                            <div className="flex items-center gap-1 text-gray-600">
+                            <div className="flex items-center gap-1">
                               <MessageSquare className="w-4 h-4" />
-                              <span>{mentor.sessions} sessions</span>
+                              <span>{mentor.sessions || 0} sessions</span>
                             </div>
                           </div>
                         </div>
-                        <button className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white px-6 py-2 rounded-xl font-semibold transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedMentor(mentor);
+                            setShowBookingModal(true);
+                          }}
+                          className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white px-6 py-2 rounded-xl font-semibold transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105"
+                        >
                           Book Session
                         </button>
                       </div>
@@ -637,39 +831,31 @@ export default function Community() {
                   <h3 className="text-lg font-bold text-gray-900">Trending Topics</h3>
                 </div>
                 <div className="space-y-3">
-                  {(() => {
-                    // Extract trending topics from posts
-                    const allTags = posts.flatMap(post => post.tags || []);
-                    const tagCounts: Record<string, number> = {};
-                    allTags.forEach(tag => {
-                      tagCounts[tag] = (tagCounts[tag] || 0) + 1;
-                    });
-                    const trendingTags = Object.entries(tagCounts)
-                      .sort(([,a], [,b]) => b - a)
-                      .slice(0, 5)
-                      .map(([tag, count]) => ({ tag, count }));
-
-                    // If no tags from posts, show message
-                    if (trendingTags.length === 0) {
-                      return (
-                        <div className="text-center py-8">
-                          <TrendingUp className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-                          <p className="text-gray-500 text-sm">No trending topics yet</p>
-                          <p className="text-gray-400 text-xs mt-1">Start using hashtags in your posts!</p>
-                        </div>
-                      );
-                    }
-
-                    return trendingTags.map(({ tag, count }, idx) => (
+                  {trendingTopics.length === 0 ? (
+                    <div className="text-center py-8">
+                      <TrendingUp className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+                      <p className="text-gray-500 text-sm">No trending topics yet</p>
+                      <p className="text-gray-400 text-xs mt-1">Start using hashtags in your posts!</p>
+                    </div>
+                  ) : (
+                    trendingTopics.map(({ tag, count }, idx) => (
                       <div
                         key={idx}
-                        className="flex items-center justify-between p-3 rounded-lg hover:bg-gray-50 cursor-pointer transition-colors duration-300 group"
+                        className="flex items-center justify-between p-3 rounded-lg hover:bg-gradient-to-r hover:from-orange-50 hover:to-red-50 cursor-pointer transition-all duration-300 group border border-transparent hover:border-orange-200"
                       >
-                        <span className="font-medium text-blue-600 group-hover:text-blue-700">#{tag}</span>
-                        <span className="text-sm text-gray-500">{count} {count === 1 ? 'post' : 'posts'}</span>
+                        <div className="flex items-center gap-3">
+                          <div className="bg-gradient-to-r from-orange-500 to-red-500 text-white w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold">
+                            {idx + 1}
+                          </div>
+                          <span className="font-semibold text-blue-600 group-hover:text-blue-700">#{tag}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm text-gray-500 group-hover:text-gray-700">{count} {count === 1 ? 'post' : 'posts'}</span>
+                          <TrendingUp className="w-4 h-4 text-orange-500 group-hover:animate-bounce" />
+                        </div>
                       </div>
-                    ));
-                  })()}
+                    ))
+                  )}
                 </div>
               </div>
 
@@ -734,24 +920,391 @@ export default function Community() {
                   })()}
                 </div>
               </div>
-
-              {/* Quick Links */}
-              <div className="bg-gradient-to-r from-blue-600 to-purple-600 rounded-2xl p-6 shadow-lg text-white">
-                <div className="flex items-center gap-3 mb-4">
-                  <Sparkles className="w-6 h-6 animate-pulse" />
-                  <h3 className="text-lg font-bold">Get Involved</h3>
-                </div>
-                <p className="text-white/90 text-sm mb-4">
-                  Join discussions, share resources, and connect with mentors to accelerate your learning journey!
-                </p>
-                <button className="w-full bg-white text-blue-600 px-4 py-2 rounded-lg font-semibold hover:bg-blue-50 transition-colors duration-300">
-                  Start Contributing
-                </button>
-              </div>
             </div>
           </div>
         </div>
       </main>
+
+      {/* Post Preview Modal */}
+      {selectedPost && (
+        <div
+          className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+          onClick={() => setSelectedPost(null)}
+        >
+          <div
+            className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header with Close Button */}
+            <div className="sticky top-0 bg-white border-b border-gray-200 p-4 flex justify-between items-center rounded-t-2xl">
+              <h2 className="text-xl font-bold text-gray-900">Post Details</h2>
+              <button
+                onClick={() => setSelectedPost(null)}
+                className="p-2 hover:bg-gray-100 rounded-full transition-colors duration-200"
+              >
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+
+            {/* Post Content */}
+            <div className="p-6">
+              {/* User Info Header */}
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-12 h-12 rounded-full bg-gradient-to-r from-blue-500 to-purple-500 flex items-center justify-center text-white font-bold text-lg">
+                  {(selectedPost.user?.name || 'U').charAt(0)}
+                </div>
+                <div>
+                  <div className="font-semibold text-gray-900">{selectedPost.user?.name || 'Anonymous'}</div>
+                  <div className="text-sm text-gray-500">
+                    {selectedPost.user?.role || 'User'} • {new Date(selectedPost.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Post Content Text */}
+              <div className="prose max-w-none mb-4">
+                <p className="text-gray-800 text-base leading-relaxed whitespace-pre-wrap">
+                  {selectedPost.content}
+                </p>
+              </div>
+
+              {/* Media Display */}
+              {selectedPost.media && selectedPost.media.length > 0 && (
+                <div className="mb-4 rounded-lg overflow-hidden">
+                  {selectedPost.media[0].type === 'image' ? (
+                    <img
+                      src={selectedPost.media[0].url}
+                      alt="Post media"
+                      className="w-full h-auto max-h-96 object-contain bg-gray-50"
+                    />
+                  ) : selectedPost.media[0].type === 'video' ? (
+                    <video
+                      src={selectedPost.media[0].url}
+                      controls
+                      className="w-full h-auto max-h-96 bg-gray-900"
+                    >
+                      Your browser does not support the video tag.
+                    </video>
+                  ) : null}
+                </div>
+              )}
+
+              {/* Tags */}
+              {selectedPost.tags && selectedPost.tags.length > 0 && (
+                <div className="flex flex-wrap gap-2 mb-4">
+                  {selectedPost.tags.map((tag: string, idx: number) => (
+                    <span
+                      key={idx}
+                      className="inline-flex items-center gap-1 px-3 py-1 bg-gradient-to-r from-blue-100 to-purple-100 text-blue-700 rounded-full text-sm font-medium"
+                    >
+                      <Hash className="w-3 h-3" />
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {/* Like and Comment Stats */}
+              <div className="flex items-center gap-6 py-4 border-y border-gray-200">
+                <button
+                  onClick={() => handleLike(selectedPost.id)}
+                  className={`flex items-center gap-2 transition-all duration-300 ${
+                    selectedPost.isLiked 
+                      ? 'text-red-500 hover:text-red-600' 
+                      : 'text-gray-600 hover:text-red-500'
+                  }`}
+                >
+                  <Heart className={`w-6 h-6 ${selectedPost.isLiked ? 'fill-current' : ''}`} />
+                  <span className="font-medium">{selectedPost.likes || 0} likes</span>
+                </button>
+                <div className="flex items-center gap-2 text-gray-600">
+                  <MessageCircle className="w-6 h-6" />
+                  <span className="font-medium">{selectedPost.comments?.length || 0} comments</span>
+                </div>
+              </div>
+
+              {/* Comments Section */}
+              <div className="mt-4">
+                {/* Comment Input */}
+                <div className="mb-4">
+                  <textarea
+                    value={commentText}
+                    onChange={(e) => setCommentText(e.target.value)}
+                    placeholder="Write a comment..."
+                    className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                    rows={3}
+                  />
+                  <button
+                    onClick={() => handleComment(selectedPost.id)}
+                    disabled={isCommenting || !commentText.trim()}
+                    className="mt-2 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white px-6 py-2 rounded-xl font-semibold transition-all duration-300 shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                  >
+                    {isCommenting ? (
+                      <div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full"></div>
+                    ) : (
+                      <Send className="w-4 h-4" />
+                    )}
+                    <span>{isCommenting ? 'Posting...' : 'Post Comment'}</span>
+                  </button>
+                </div>
+
+                {/* Comments List */}
+                {selectedPost.comments && selectedPost.comments.length > 0 && (
+                  <div className="space-y-4">
+                    <h3 className="font-semibold text-gray-900 text-lg">Comments</h3>
+                    {selectedPost.comments.map((comment: any) => (
+                      <div key={comment.id} className="flex gap-3 p-4 bg-gray-50 rounded-xl">
+                        <div className="w-10 h-10 rounded-full bg-gradient-to-r from-blue-500 to-purple-500 flex items-center justify-center text-white font-bold flex-shrink-0">
+                          {(comment.user?.name || 'U').charAt(0)}
+                        </div>
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="font-semibold text-gray-900">{comment.user?.name || 'Anonymous'}</span>
+                            <span className="text-sm text-gray-500">
+                              {new Date(comment.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                            </span>
+                          </div>
+                          <p className="text-gray-700 leading-relaxed">{comment.text}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Book Session Modal */}
+      {showBookingModal && selectedMentor && (
+        <div
+          className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+          onClick={() => {
+            setShowBookingModal(false);
+            setSelectedMentor(null);
+            setBookingMessage('');
+            setBookingStatus('idle');
+          }}
+        >
+          <div
+            className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-2xl font-bold text-gray-900">Request Session</h2>
+              <button
+                onClick={() => {
+                  setShowBookingModal(false);
+                  setSelectedMentor(null);
+                  setBookingMessage('');
+                  setBookingStatus('idle');
+                }}
+                className="p-2 hover:bg-gray-100 rounded-full transition-colors duration-200"
+              >
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+
+            {bookingStatus === 'success' ? (
+              <div className="text-center py-8">
+                <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+                <h3 className="text-xl font-bold text-gray-900 mb-2">Request Sent!</h3>
+                <p className="text-gray-600">The mentor will be notified and can schedule a session with you.</p>
+              </div>
+            ) : (
+              <>
+                {/* Mentor Info */}
+                <div className="flex items-center gap-3 mb-6 p-4 bg-gradient-to-r from-blue-50 to-purple-50 rounded-xl">
+                  <div className="w-12 h-12 rounded-full bg-gradient-to-r from-blue-500 to-purple-500 flex items-center justify-center text-white font-bold text-lg">
+                    {selectedMentor.avatar}
+                  </div>
+                  <div>
+                    <div className="font-bold text-gray-900">{selectedMentor.name}</div>
+                    <div className="text-sm text-gray-600">{selectedMentor.role}</div>
+                  </div>
+                </div>
+
+                {/* Message Input */}
+                <div className="mb-6">
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Message (Optional)
+                  </label>
+                  <textarea
+                    value={bookingMessage}
+                    onChange={(e) => setBookingMessage(e.target.value)}
+                    placeholder="Tell the mentor what you'd like to learn or discuss..."
+                    className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+                    rows={4}
+                    disabled={bookingStatus === 'loading'}
+                  />
+                </div>
+
+                {/* Buttons */}
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => {
+                      setShowBookingModal(false);
+                      setSelectedMentor(null);
+                      setBookingMessage('');
+                      setBookingStatus('idle');
+                    }}
+                    className="flex-1 px-4 py-3 border border-gray-300 text-gray-700 rounded-xl font-semibold hover:bg-gray-50 transition-colors duration-200"
+                    disabled={bookingStatus === 'loading'}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleBookSession}
+                    disabled={bookingStatus === 'loading'}
+                    className="flex-1 px-4 py-3 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white rounded-xl font-semibold transition-all duration-300 shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {bookingStatus === 'loading' ? 'Sending...' : 'Send Request'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* My Requests Panel */}
+      {showMyRequestsPanel && (
+        <div
+          className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+          onClick={() => setShowMyRequestsPanel(false)}
+        >
+          <div
+            className="bg-white rounded-2xl max-w-2xl w-full max-h-[80vh] overflow-y-auto shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="sticky top-0 bg-white border-b border-gray-200 p-6 rounded-t-2xl">
+              <div className="flex justify-between items-center mb-4">
+                <div>
+                  <h2 className="text-2xl font-bold text-gray-900">My Session Requests</h2>
+                  <p className="text-gray-600 text-sm mt-1">
+                    {myRequests.filter((r: any) => r.status === 'pending').length} pending request(s)
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowMyRequestsPanel(false)}
+                  className="p-2 hover:bg-gray-100 rounded-full transition-colors duration-200"
+                >
+                  <X className="w-5 h-5 text-gray-500" />
+                </button>
+              </div>
+              
+              {/* Filter Tabs */}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setRequestsFilter('pending')}
+                  className={`px-4 py-2 rounded-lg font-semibold transition-all duration-200 ${
+                    requestsFilter === 'pending'
+                      ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-md'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
+                >
+                  Pending ({myRequests.filter((r: any) => r.status === 'pending').length})
+                </button>
+                <button
+                  onClick={() => setRequestsFilter('all')}
+                  className={`px-4 py-2 rounded-lg font-semibold transition-all duration-200 ${
+                    requestsFilter === 'all'
+                      ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-md'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
+                >
+                  All Requests ({myRequests.length})
+                </button>
+              </div>
+            </div>
+
+            {/* Requests List */}
+            <div className="p-6">
+              {myRequests.filter((r: any) => requestsFilter === 'all' || r.status === 'pending').length === 0 ? (
+                <div className="text-center py-12">
+                  <MessageSquare className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+                  <p className="text-gray-500 text-lg">No {requestsFilter === 'pending' ? 'pending' : ''} session requests</p>
+                  <p className="text-gray-400 text-sm mt-2">
+                    {requestsFilter === 'pending' 
+                      ? "When you request sessions from mentors, they'll appear here"
+                      : "You haven't made any session requests yet"
+                    }
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {myRequests
+                    .filter((r: any) => requestsFilter === 'all' || r.status === 'pending')
+                    .map((request: any) => (
+                      <div
+                        key={request.id}
+                        className={`rounded-xl p-5 border-2 ${
+                          request.status === 'pending' 
+                            ? 'bg-gradient-to-r from-yellow-50 to-amber-50 border-yellow-200'
+                            : request.status === 'approved'
+                            ? 'bg-gradient-to-r from-green-50 to-emerald-50 border-green-200'
+                            : 'bg-gradient-to-r from-gray-50 to-slate-50 border-gray-200'
+                        }`}
+                      >
+                        {/* Mentor Info */}
+                        <div className="flex items-start gap-4 mb-4">
+                          <div className="w-12 h-12 rounded-full bg-gradient-to-r from-blue-500 to-purple-500 flex items-center justify-center text-white font-bold text-lg flex-shrink-0">
+                            {request.mentor?.name?.charAt(0) || 'M'}
+                          </div>
+                          <div className="flex-1">
+                            <div className="flex items-center justify-between mb-1">
+                              <h3 className="text-lg font-bold text-gray-900">
+                                {request.mentor?.name || 'Unknown Mentor'}
+                              </h3>
+                              <span className={`px-3 py-1 text-xs font-bold rounded-full uppercase ${
+                                request.status === 'pending' 
+                                  ? 'bg-yellow-100 text-yellow-800'
+                                  : request.status === 'approved'
+                                  ? 'bg-green-100 text-green-800'
+                                  : 'bg-red-100 text-red-800'
+                              }`}>
+                                {request.status}
+                              </span>
+                            </div>
+                            <p className="text-sm text-gray-600">{request.mentor?.email}</p>
+                          </div>
+                        </div>
+
+                        {/* Message */}
+                        {request.message && (
+                          <div className="bg-white rounded-lg p-4 mb-4 border border-gray-200">
+                            <p className="text-sm text-gray-700 italic">"{request.message}"</p>
+                          </div>
+                        )}
+
+                        {/* Timestamp */}
+                        <div className="flex items-center gap-2 text-xs text-gray-500">
+                          <Clock className="w-3 h-3" />
+                          <span>
+                            Requested {new Date(request.createdAt).toLocaleDateString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                              year: 'numeric',
+                              hour: 'numeric',
+                              minute: '2-digit'
+                            })}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

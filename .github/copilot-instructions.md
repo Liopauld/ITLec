@@ -52,6 +52,34 @@ node prisma/seed_tracks.js
 
 ## Project-Specific Patterns
 
+### Calendar Conflict Detection (NEW)
+**Purpose**: Prevents double-booking and scheduling conflicts across all calendar features.
+
+**How it works**:
+- Helper function `checkCalendarConflicts(userId, startTime, endTime)` in `apps/api/src/index.ts`
+- Checks both `PersonalCalendarEvent` and `Session` tables for overlapping times
+- Uses comprehensive overlap detection (new starts during existing, ends during existing, or completely contains)
+- Returns `{ hasConflict: boolean, conflictDetails?: string }`
+
+**Protected Endpoints**:
+1. `POST /sessions` - Checks both mentor and student calendars before creating session
+2. `POST /events/:id/register` - Checks user calendar before event registration
+3. `POST /calendar/events` - Checks user calendar before creating blocked time
+
+**Error Response** (409 Conflict):
+```json
+{
+  "error": "Schedule conflict",
+  "details": "You have an existing session \"Python Basics\" from 1/15/2025, 2:00:00 PM to 1/15/2025, 3:00:00 PM"
+}
+```
+
+**Frontend Integration**:
+- `users.tsx`, `events.tsx`, `sessions.tsx` all show detailed conflict messages
+- User-friendly alerts explain what conflicts and suggest choosing different time
+
+**See**: `CALENDAR_CONFLICT_DETECTION.md` for detailed implementation documentation
+
 ### Authentication Flow (JWT + localStorage)
 1. **Login/Signup**: API returns `{ token, user }` → stored in `localStorage`
 2. **Auth Middleware** (`requireAuth` in `apps/api/src/index.ts`):

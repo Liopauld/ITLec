@@ -1,0 +1,7 @@
+-- AlterTable
+ALTER TABLE "Module" ADD COLUMN     "coinReward" INTEGER NOT NULL DEFAULT 10,
+ADD COLUMN     "hintCost" INTEGER NOT NULL DEFAULT 5,
+ADD COLUMN     "hints" JSONB;
+
+-- AlterTable
+ALTER TABLE "User" ADD COLUMN     "coins" INTEGER NOT NULL DEFAULT 0;

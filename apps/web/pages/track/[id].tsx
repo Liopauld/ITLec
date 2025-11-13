@@ -5,7 +5,7 @@ import {
   ArrowLeft, Play, Code, Network, Shield, Database, CheckCircle, 
   Trophy, Target, Zap, Clock, BookOpen, ChevronRight, Sparkles,
   AlertCircle, Send, Terminal, Save, RotateCcw, Loader, ChevronLeft,
-  Info, ExternalLink
+  Info, ExternalLink, Coins
 } from 'lucide-react';
 
 interface Module {
@@ -39,23 +39,25 @@ const TrackDetails: React.FC = () => {
   const [userId, setUserId] = useState<string | null>(null);
   const [trackProgress, setTrackProgress] = useState<any | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const [coins, setCoins] = useState<number>(0);
   const [networkDevices, setNetworkDevices] = useState<string[]>([]);
   const [connections, setConnections] = useState<[string, string][]>([]);
   const [newConnection, setNewConnection] = useState<{ from: string; to: string }>({ from: '', to: '' });
   const [showCompletionAnimation, setShowCompletionAnimation] = useState(false);
   const [threatAnswers, setThreatAnswers] = useState<string[]>(['']);
   const [sqlQuery, setSqlQuery] = useState<string>('');
-  const [showHints, setShowHints] = useState(false);
   const [codeTheme, setCodeTheme] = useState<'dark' | 'light'>('dark');
   const [testResults, setTestResults] = useState<any[]>([]);
   const [expandedTests, setExpandedTests] = useState<Set<number>>(new Set());
-  const [showExampleSolution, setShowExampleSolution] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [showSuccessToast, setShowSuccessToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
   const [codeEditorRef, setCodeEditorRef] = useState<HTMLTextAreaElement | null>(null);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
+  const [showHintModal, setShowHintModal] = useState(false);
+  const [hintData, setHintData] = useState<any>(null);
+  const [purchasedHints, setPurchasedHints] = useState<{ [moduleId: string]: string }>({});
 
   const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:4000';
   const DEFAULT_GAMES_PER_TRACK = 0; // fallback when track.games is not present
@@ -125,16 +127,14 @@ const TrackDetails: React.FC = () => {
     }
 
     const modulesCount = t?.modules?.length || 0;
-    const visibleGameIds = getVisibleGameIds(t);
-    const completedModules = (pobj?.completedModules?.length || 0);
-    const completedGames = (pobj?.completedGames?.length || 0);
+    const completedModulesCount = (pobj?.completedModules?.length || 0);
 
-    // Use the actual number of visible games, not Math.max
-    const gamesCount = visibleGameIds.size;
-    const totalItems = modulesCount + gamesCount;
-    const done = completedModules + completedGames;
+    // Since each module contains at most one game, and completing a game marks the module complete,
+    // we should only count modules to avoid double counting
+    const totalItems = modulesCount;
+    const done = completedModulesCount;
 
-    const percent = totalItems === 0 ? 100 : Math.round((done / totalItems) * 100);
+    const percent = totalItems === 0 ? 100 : Math.min(100, Math.round((done / totalItems) * 100));
     return percent;
   };
 
@@ -158,24 +158,89 @@ const TrackDetails: React.FC = () => {
     try {
       const headers: any = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = `Bearer ${token}`;
-      await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}/game/${activeGame.id}/complete`, { method: 'POST', headers });
-      const modRes = await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}/module/${activeModule.id}/complete`, { method: 'POST', headers });
-      if (modRes.ok) {
-        const modData = await modRes.json();
-        setTrackProgress((prev: any) => {
-          const merged = mergeProgress(prev, modData.progress);
+      
+      // Pre-create progress record to avoid 404 errors
+      await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ completedModules: [], completedGames: [], achievements: null })
+      }).catch(() => {});
+      
+      // Mark game as complete
+      const gameRes = await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}/game/${activeGame.id}/complete`, { 
+        method: 'POST', 
+        headers 
+      });
+      
+      // Mark module as complete
+      const modRes = await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}/module/${activeModule.id}/complete`, { 
+        method: 'POST', 
+        headers 
+      });
+      
+      if (gameRes.ok || modRes.ok) {
+        // Fetch the updated progress
+        const progressRes = await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}`, { headers });
+        if (progressRes.ok) {
+          const progressData = await progressRes.json();
+          const merged = mergeProgress(trackProgress, progressData.progress);
+          setTrackProgress(merged);
           setProgress(calcPercent(merged, track));
-          // persist merged progress
-          saveProgress(merged);
-          return merged;
-        });
+          await saveProgress(merged);
+        }
         
         // Show success toast
-        setToastMessage(`🎉 Game completed! "${activeGame.title || activeGame.name || 'Challenge'}"`);
+        setToastMessage(`🎉 Game completed! "${activeGame.name || activeGame.title || 'Challenge'}"`);
         setShowSuccessToast(true);
         setHasUnsavedChanges(false);
       }
-    } catch (err) {}
+    } catch (err) {
+      console.error('Error marking game complete:', err);
+    }
+  };
+
+  const fetchHintInfo = async () => {
+    if (!activeModule || !userId || !token) return;
+    try {
+      const res = await fetch(`${API_BASE}/modules/${activeModule.id}/hints`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setHintData(data);
+        setShowHintModal(true);
+      }
+    } catch (err) {
+      console.error('Error fetching hint info:', err);
+    }
+  };
+
+  const purchaseHint = async () => {
+    if (!activeModule || !userId || !token) return;
+    try {
+      const res = await fetch(`${API_BASE}/users/${userId}/modules/${activeModule.id}/purchase-hint`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        // Store hint for this specific module
+        setPurchasedHints(prev => ({
+          ...prev,
+          [activeModule.id]: data.hint
+        }));
+        setCoins(data.newBalance);
+        setToastMessage('💡 Hint unlocked!');
+        setShowSuccessToast(true);
+      } else {
+        const error = await res.json();
+        alert(error.error || 'Failed to purchase hint');
+      }
+    } catch (err) {
+      console.error('Error purchasing hint:', err);
+      alert('Failed to purchase hint. Please try again.');
+    }
   };
 
   useEffect(() => {
@@ -185,6 +250,13 @@ const TrackDetails: React.FC = () => {
       .then((res) => res.json())
       .then((data) => {
         const t = data.track || data;
+        console.log('📚 Track loaded:', {
+          title: t.title,
+          modulesCount: t.modules?.length,
+          gamesCount: t.games?.length,
+          games: t.games,
+          modules: t.modules?.map((m: any) => ({ id: m.id, type: m.type, hasGames: !!m.games?.length }))
+        });
         setTrack(t);
         setLoading(false);
       })
@@ -197,6 +269,25 @@ const TrackDetails: React.FC = () => {
     setUserId(uid);
     setToken(t);
   }, []);
+
+  // Fetch user's coin balance
+  useEffect(() => {
+    if (!userId || !token) return;
+    const fetchCoins = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/users/${userId}/coins`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setCoins(data.coins || 0);
+        }
+      } catch (error) {
+        console.error('Failed to fetch coins:', error);
+      }
+    };
+    fetchCoins();
+  }, [userId, token]);
 
   useEffect(() => {
     if (!userId || !track) return;
@@ -253,23 +344,34 @@ const TrackDetails: React.FC = () => {
 
   const getGameForModule = (mod: Module | null) => {
     if (!mod || !track) return null;
+    console.log('🔍 Getting game for module:', mod.id, 'type:', mod.type);
+    
     // Check if the module has games directly
     if (mod.games && Array.isArray(mod.games) && mod.games.length > 0) {
+      console.log('✅ Found games in module.games:', mod.games);
       return mod.games[0]; // Return the first game if module has games
     }
+    
     // Check track-level games that match this module's type
     if (track.games && Array.isArray(track.games) && track.games.length > 0) {
       const matchingGame = track.games.find((g: any) => g.type === mod.type);
-      if (matchingGame) return matchingGame;
+      if (matchingGame) {
+        console.log('✅ Found matching game in track.games:', matchingGame);
+        return matchingGame;
+      }
     }
+    
     // Fallback: look through all modules for a game matching the module type
     if (track.modules) {
       for (const m of track.modules) {
         if (m.games && Array.isArray(m.games) && m.games.length > 0 && m.type === mod.type) {
+          console.log('✅ Found game in another module:', m.games[0]);
           return m.games[0];
         }
       }
     }
+    
+    console.log('❌ No game found for module');
     return null;
   };
 
@@ -473,6 +575,19 @@ const TrackDetails: React.FC = () => {
                   </div>
                 </div>
               </div>
+
+              {/* Coin Balance Display */}
+              {token && userId && (
+                <div className="mt-6 inline-flex items-center gap-3 bg-white/30 backdrop-blur-md px-6 py-3 rounded-2xl shadow-lg border-2 border-white/40">
+                  <div className="bg-gradient-to-br from-yellow-400 to-orange-500 rounded-full p-2 shadow-md">
+                    <Coins className="w-6 h-6 text-white" />
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold text-white/80 uppercase tracking-wide">Your Balance</div>
+                    <div className="text-2xl font-bold text-white">{coins} Coins</div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -758,6 +873,15 @@ const TrackDetails: React.FC = () => {
                               setTrackProgress(merged);
                               setProgress(calcPercent(merged, track));
                               await saveProgress(merged);
+                              
+                              // Refresh coin balance after module completion
+                              const coinRes = await fetch(`${API_BASE}/users/${userId}/coins`, {
+                                headers: { 'Authorization': `Bearer ${token}` }
+                              });
+                              if (coinRes.ok) {
+                                const coinData = await coinRes.json();
+                                setCoins(coinData.coins || 0);
+                              }
                             } catch (err) {
                               // no-op: keep current UI; user likely unauthenticated
                             }
@@ -824,7 +948,11 @@ const TrackDetails: React.FC = () => {
                       </div>
 
                       <div className="prose prose-lg max-w-none text-gray-700 mb-8">
-                        <div dangerouslySetInnerHTML={{ __html: activeLesson.body || String(activeLesson.content || '') }} />
+                        <div dangerouslySetInnerHTML={{ 
+                          __html: (typeof activeLesson.body === 'string' && activeLesson.body) 
+                            ? activeLesson.body 
+                            : (activeLesson.body?.html || activeLesson.content?.body || '<p class="text-gray-400 italic">No content available for this lesson.</p>')
+                        }} />
                       </div>
 
                       {activeLesson.resources && activeLesson.resources.length > 0 && (
@@ -894,13 +1022,16 @@ const TrackDetails: React.FC = () => {
                               <CheckCircle className="w-4 h-4" /> Completed!
                             </span>
                           )}
-                          <button 
-                            onClick={() => setShowHints(!showHints)}
-                            className="p-2 bg-white/20 hover:bg-white/30 rounded-lg transition-all duration-300 transform hover:scale-110"
-                            title="Toggle Hints"
-                          >
-                            <Info className="w-5 h-5 text-white" />
-                          </button>
+                          {token && userId && (
+                            <button 
+                              onClick={fetchHintInfo}
+                              className="flex items-center gap-2 bg-gradient-to-r from-yellow-400 to-orange-500 hover:from-yellow-500 hover:to-orange-600 text-white px-4 py-2 rounded-lg font-bold transition-all duration-300 transform hover:scale-105 shadow-lg"
+                              title="Get a hint for this module"
+                            >
+                              <Sparkles className="w-5 h-5" />
+                              Get Hint
+                            </button>
+                          )}
                           <button 
                             onClick={() => {
                               if (code.trim()) {
@@ -979,111 +1110,20 @@ const TrackDetails: React.FC = () => {
                           </div>
                         </div>
 
-                        {/* Hints Section (Collapsible) */}
-                        {showHints && (
-                          <div className="bg-yellow-50 border-l-4 border-yellow-500 rounded-lg p-5 mb-6 animate-fadeIn">
+                        {/* Purchased Hint Display */}
+                        {activeModule && purchasedHints[activeModule.id] && (
+                          <div className="bg-gradient-to-r from-green-50 to-emerald-50 border-2 border-green-200 rounded-xl p-5 mb-6 animate-fadeIn">
                             <div className="flex items-start gap-3">
-                              <Sparkles className="w-6 h-6 text-yellow-600 flex-shrink-0 mt-1" />
+                              <div className="bg-green-500 rounded-full p-2">
+                                <Sparkles className="w-5 h-5 text-white" />
+                              </div>
                               <div className="flex-1">
-                                <h4 className="font-bold text-gray-900 mb-2 text-lg">💡 Hints & Tips</h4>
-                                {/* Challenge-specific hints */}
-                                {activeGame?.content?.challengeId === 'array-sum' && (
-                                  <ul className="list-disc ml-5 space-y-1 text-gray-700">
-                                    <li>Use the <code className="bg-yellow-100 px-1 rounded">reduce()</code> method for a clean solution</li>
-                                    <li>Or use a simple for loop to iterate through the array</li>
-                                    <li>Don't forget to handle empty arrays (should return 0)</li>
-                                    <li>Test with positive, negative, and mixed numbers</li>
-                                  </ul>
-                                )}
-                                {activeGame?.content?.challengeId === 'reverse-string' && (
-                                  <ul className="list-disc ml-5 space-y-1 text-gray-700">
-                                    <li>Convert string to array using <code className="bg-yellow-100 px-1 rounded">split('')</code></li>
-                                    <li>Use <code className="bg-yellow-100 px-1 rounded">reverse()</code> method on the array</li>
-                                    <li>Join back to string with <code className="bg-yellow-100 px-1 rounded">join('')</code></li>
-                                    <li>Or use a for loop to build the reversed string manually</li>
-                                  </ul>
-                                )}
-                                {activeGame?.content?.challengeId === 'fibonacci' && (
-                                  <ul className="list-disc ml-5 space-y-1 text-gray-700">
-                                    <li>Start with base cases: fibonacci(0) = 0, fibonacci(1) = 1</li>
-                                    <li>Use recursion or iteration to calculate the sequence</li>
-                                    <li>Iteration is more efficient than recursion for larger numbers</li>
-                                    <li>The sequence is: 0, 1, 1, 2, 3, 5, 8, 13, 21...</li>
-                                  </ul>
-                                )}
-                                {activeGame?.content?.challengeId === 'palindrome' && (
-                                  <ul className="list-disc ml-5 space-y-1 text-gray-700">
-                                    <li>Convert to lowercase and remove spaces first</li>
-                                    <li>Compare the string with its reversed version</li>
-                                    <li>Use <code className="bg-yellow-100 px-1 rounded">str.toLowerCase().replace(/\s/g, '')</code> to clean</li>
-                                    <li>Remember: "A man a plan a canal Panama" is a palindrome!</li>
-                                  </ul>
-                                )}
-                                {activeGame?.content?.challengeId === 'prime-checker' && (
-                                  <ul className="list-disc ml-5 space-y-1 text-gray-700">
-                                    <li>Numbers less than 2 are not prime</li>
-                                    <li>Check divisibility from 2 up to √n for efficiency</li>
-                                    <li>If any number divides evenly, it's not prime</li>
-                                    <li>Remember: 2 is the only even prime number</li>
-                                  </ul>
-                                )}
-                                {!activeGame?.content?.challengeId && (
-                                  <ul className="list-disc ml-5 space-y-1 text-gray-700">
-                                    <li>Think about the problem step by step</li>
-                                    <li>Test your code with simple inputs first</li>
-                                    <li>Consider edge cases and special scenarios</li>
-                                    <li>Use console.log() for debugging</li>
-                                  </ul>
-                                )}
+                                <h4 className="font-bold text-green-900 mb-2 text-lg">💡 Unlocked Hint</h4>
+                                <div className="bg-white rounded-lg p-4 border border-green-300">
+                                  <pre className="whitespace-pre-wrap font-sans text-gray-800 leading-relaxed">{purchasedHints[activeModule.id]}</pre>
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        )}
-                        
-                        {/* Example Solution Section (Collapsible) */}
-                        {activeGame?.content?.challengeId && (
-                          <div className="mb-6">
-                            <button
-                              onClick={() => setShowExampleSolution(!showExampleSolution)}
-                              className="w-full bg-gradient-to-r from-purple-50 to-pink-50 border-2 border-purple-200 hover:border-purple-300 rounded-lg p-4 flex items-center justify-between transition-all duration-300 group"
-                            >
-                              <div className="flex items-center gap-3">
-                                <Code className="w-5 h-5 text-purple-600" />
-                                <span className="font-bold text-purple-700">
-                                  {showExampleSolution ? '🙈 Hide' : '👀 Show'} Example Solution
-                                </span>
-                              </div>
-                              <ChevronRight className={`w-5 h-5 text-purple-600 transition-transform duration-300 ${
-                                showExampleSolution ? 'rotate-90' : ''
-                              }`} />
-                            </button>
-                            
-                            {showExampleSolution && (
-                              <div className="mt-3 bg-purple-50 border-2 border-purple-200 rounded-lg p-5 animate-fadeIn">
-                                <div className="flex items-start gap-3 mb-3">
-                                  <Sparkles className="w-5 h-5 text-purple-600 flex-shrink-0 mt-1" />
-                                  <div>
-                                    <h5 className="font-bold text-purple-900 mb-1">Example Solution</h5>
-                                    <p className="text-sm text-purple-700">Try to solve it yourself first! This is just one way to approach the problem.</p>
-                                  </div>
-                                </div>
-                                <div className="bg-gray-900 text-green-400 p-4 rounded-lg font-mono text-sm overflow-x-auto">
-                                  <pre>{
-                                    activeGame.content.challengeId === 'array-sum' 
-                                      ? `function sumArray(arr) {\n  return arr.reduce((sum, num) => sum + num, 0);\n}\n\n// Alternative with for loop:\nfunction sumArray(arr) {\n  let sum = 0;\n  for (let num of arr) {\n    sum += num;\n  }\n  return sum;\n}`
-                                      : activeGame.content.challengeId === 'reverse-string'
-                                      ? `function reverseString(str) {\n  return str.split('').reverse().join('');\n}\n\n// Alternative manual approach:\nfunction reverseString(str) {\n  let reversed = '';\n  for (let i = str.length - 1; i >= 0; i--) {\n    reversed += str[i];\n  }\n  return reversed;\n}`
-                                      : activeGame.content.challengeId === 'fibonacci'
-                                      ? `function fibonacci(n) {\n  if (n <= 1) return n;\n  let a = 0, b = 1;\n  for (let i = 2; i <= n; i++) {\n    [a, b] = [b, a + b];\n  }\n  return b;\n}\n\n// Recursive (less efficient):\nfunction fibonacci(n) {\n  if (n <= 1) return n;\n  return fibonacci(n - 1) + fibonacci(n - 2);\n}`
-                                      : activeGame.content.challengeId === 'palindrome'
-                                      ? `function isPalindrome(str) {\n  const clean = str.toLowerCase().replace(/\\s/g, '');\n  return clean === clean.split('').reverse().join('');\n}\n\n// Alternative two-pointer approach:\nfunction isPalindrome(str) {\n  const clean = str.toLowerCase().replace(/\\s/g, '');\n  let left = 0, right = clean.length - 1;\n  while (left < right) {\n    if (clean[left] !== clean[right]) return false;\n    left++; right--;\n  }\n  return true;\n}`
-                                      : activeGame.content.challengeId === 'prime-checker'
-                                      ? `function isPrime(num) {\n  if (num < 2) return false;\n  if (num === 2) return true;\n  if (num % 2 === 0) return false;\n  \n  for (let i = 3; i <= Math.sqrt(num); i += 2) {\n    if (num % i === 0) return false;\n  }\n  return true;\n}`
-                                      : '// No example solution available for this challenge'
-                                  }</pre>
-                                </div>
-                              </div>
-                            )}
                           </div>
                         )}
                         
@@ -1254,29 +1294,23 @@ const TrackDetails: React.FC = () => {
                           </button>
                           {(token && userId && activeGame) ? (
                             <button
-                              className="bg-green-50 hover:bg-green-100 text-green-700 px-4 py-2 rounded-xl font-semibold transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-xl font-semibold transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed shadow-md hover:shadow-lg flex items-center gap-2"
                               disabled={isActiveGameCompleted}
-                              onClick={async () => {
-                                try {
-                                  const headers: any = { 'Content-Type': 'application/json' };
-                                  if (token) headers['Authorization'] = `Bearer ${token}`;
-                                  // Pre-create progress to avoid 404
-                                  if (token) {
-                                    await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}`, {
-                                      method: 'PUT', headers,
-                                      body: JSON.stringify({ completedModules: [], completedGames: [], achievements: null })
-                                    }).catch(() => {});
-                                  }
-                                  const res = await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}/game/${activeGame.id}/complete`, { method: 'POST', headers });
-                                  if (!res.ok) return;
-                                  const data = await res.json();
-                                  const merged = mergeProgress(trackProgress, data.progress);
-                                  setTrackProgress(merged);
-                                  setProgress(calcPercent(merged, track));
-                                  await saveProgress(merged);
-                                } catch (err) {}
-                              }}
-                            >Mark game complete</button>
+                              onClick={markGameAndModuleComplete}
+                              title={isActiveGameCompleted ? "Already completed" : "Mark this game as complete"}
+                            >
+                              {isActiveGameCompleted ? (
+                                <>
+                                  <CheckCircle className="w-4 h-4" />
+                                  Completed ✓
+                                </>
+                              ) : (
+                                <>
+                                  <CheckCircle className="w-4 h-4" />
+                                  Mark Complete
+                                </>
+                              )}
+                            </button>
                           ) : (
                             activeGame ? (
                               <button
@@ -1485,14 +1519,26 @@ const TrackDetails: React.FC = () => {
                   {activeGame?.type === 'network' && (
                     <div className="bg-white rounded-2xl shadow-lg border border-gray-100 overflow-hidden">
                       <div className="bg-gradient-to-r from-green-500 to-emerald-500 px-6 py-4">
-                        <div className="flex items-center gap-3">
-                          <div className="bg-white/20 backdrop-blur-sm rounded-lg p-2">
-                            <Network className="w-6 h-6 text-white" />
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="bg-white/20 backdrop-blur-sm rounded-lg p-2">
+                              <Network className="w-6 h-6 text-white" />
+                            </div>
+                            <div>
+                              <h3 className="text-xl font-bold text-white">{activeGame?.content?.title || activeModule.content?.title || `Module`}</h3>
+                              <p className="text-green-100 text-sm">Network Topology Builder</p>
+                            </div>
                           </div>
-                          <div>
-                            <h3 className="text-xl font-bold text-white">{activeGame?.content?.title || activeModule.content?.title || `Module`}</h3>
-                            <p className="text-green-100 text-sm">Network Topology Builder</p>
-                          </div>
+                          {token && userId && (
+                            <button 
+                              onClick={fetchHintInfo}
+                              className="flex items-center gap-2 bg-gradient-to-r from-yellow-400 to-orange-500 hover:from-yellow-500 hover:to-orange-600 text-white px-4 py-2 rounded-lg font-bold transition-all duration-300 transform hover:scale-105 shadow-lg"
+                              title="Get a hint for this module"
+                            >
+                              <Sparkles className="w-5 h-5" />
+                              Get Hint
+                            </button>
+                          )}
                         </div>
                       </div>
                       
@@ -1599,28 +1645,23 @@ const TrackDetails: React.FC = () => {
                         {(token && userId && activeGame) ? (
                           <div className="mt-4">
                             <button
-                              className="w-full bg-green-50 text-green-700 px-4 py-2 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="w-full bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-md hover:shadow-lg flex items-center justify-center gap-2"
                               disabled={isActiveGameCompleted}
-                              onClick={async () => {
-                                try {
-                                  const headers: any = { 'Content-Type': 'application/json' };
-                                  if (token) headers['Authorization'] = `Bearer ${token}`;
-                                  if (token) {
-                                    await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}`, {
-                                      method: 'PUT', headers,
-                                      body: JSON.stringify({ completedModules: [], completedGames: [], achievements: null })
-                                    }).catch(() => {});
-                                  }
-                                  const res = await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}/game/${activeGame.id}/complete`, { method: 'POST', headers });
-                                  if (!res.ok) return;
-                                  const data = await res.json();
-                                  const merged = mergeProgress(trackProgress, data.progress);
-                                  setTrackProgress(merged);
-                                  setProgress(calcPercent(merged, track));
-                                  await saveProgress(merged);
-                                } catch (err) {}
-                              }}
-                            >Mark game complete</button>
+                              onClick={markGameAndModuleComplete}
+                              title={isActiveGameCompleted ? "Already completed" : "Mark this game as complete"}
+                            >
+                              {isActiveGameCompleted ? (
+                                <>
+                                  <CheckCircle className="w-5 h-5" />
+                                  Completed ✓
+                                </>
+                              ) : (
+                                <>
+                                  <CheckCircle className="w-5 h-5" />
+                                  Mark Complete
+                                </>
+                              )}
+                            </button>
                           </div>
                         ) : (
                           activeGame ? (
@@ -1641,14 +1682,26 @@ const TrackDetails: React.FC = () => {
                   {activeGame?.type === 'threat' && (
                     <div className="bg-white rounded-2xl shadow-xl border-2 border-gray-100 overflow-hidden">
                       <div className="bg-gradient-to-r from-red-600 via-orange-600 to-pink-600 px-6 py-5">
-                        <div className="flex items-center gap-3">
-                          <div className="bg-white/20 backdrop-blur-sm rounded-lg p-2 animate-pulse">
-                            <Shield className="w-7 h-7 text-white" />
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="bg-white/20 backdrop-blur-sm rounded-lg p-2 animate-pulse">
+                              <Shield className="w-7 h-7 text-white" />
+                            </div>
+                            <div>
+                              <h3 className="text-2xl font-bold text-white">{activeGame?.content?.title || activeModule.content?.title || `Threat Detection`}</h3>
+                              <p className="text-red-100 text-sm font-medium">🔒 Cybersecurity Challenge</p>
+                            </div>
                           </div>
-                          <div>
-                            <h3 className="text-2xl font-bold text-white">{activeGame?.content?.title || activeModule.content?.title || `Threat Detection`}</h3>
-                            <p className="text-red-100 text-sm font-medium">🔒 Cybersecurity Challenge</p>
-                          </div>
+                          {token && userId && (
+                            <button 
+                              onClick={fetchHintInfo}
+                              className="flex items-center gap-2 bg-gradient-to-r from-yellow-400 to-orange-500 hover:from-yellow-500 hover:to-orange-600 text-white px-4 py-2 rounded-lg font-bold transition-all duration-300 transform hover:scale-105 shadow-lg"
+                              title="Get a hint for this module"
+                            >
+                              <Sparkles className="w-5 h-5" />
+                              Get Hint
+                            </button>
+                          )}
                         </div>
                       </div>
                       
@@ -1747,28 +1800,23 @@ const TrackDetails: React.FC = () => {
                         {(token && userId && activeGame) ? (
                           <div className="mt-4">
                             <button
-                              className="w-full bg-green-50 text-green-700 px-4 py-2 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="w-full bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-md hover:shadow-lg flex items-center justify-center gap-2"
                               disabled={isActiveGameCompleted}
-                              onClick={async () => {
-                                try {
-                                  const headers: any = { 'Content-Type': 'application/json' };
-                                  if (token) headers['Authorization'] = `Bearer ${token}`;
-                                  if (token) {
-                                    await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}`, {
-                                      method: 'PUT', headers,
-                                      body: JSON.stringify({ completedModules: [], completedGames: [], achievements: null })
-                                    }).catch(() => {});
-                                  }
-                                  const res = await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}/game/${activeGame.id}/complete`, { method: 'POST', headers });
-                                  if (!res.ok) return;
-                                  const data = await res.json();
-                                  const merged = mergeProgress(trackProgress, data.progress);
-                                  setTrackProgress(merged);
-                                  setProgress(calcPercent(merged, track));
-                                  await saveProgress(merged);
-                                } catch (err) {}
-                              }}
-                            >Mark game complete</button>
+                              onClick={markGameAndModuleComplete}
+                              title={isActiveGameCompleted ? "Already completed" : "Mark this game as complete"}
+                            >
+                              {isActiveGameCompleted ? (
+                                <>
+                                  <CheckCircle className="w-5 h-5" />
+                                  Completed ✓
+                                </>
+                              ) : (
+                                <>
+                                  <CheckCircle className="w-5 h-5" />
+                                  Mark Complete
+                                </>
+                              )}
+                            </button>
                           </div>
                         ) : (
                           activeGame ? (
@@ -1789,14 +1837,26 @@ const TrackDetails: React.FC = () => {
                   {activeGame?.type === 'sql-quiz' && (
                     <div className="bg-white rounded-2xl shadow-xl border-2 border-gray-100 overflow-hidden">
                       <div className="bg-gradient-to-r from-purple-600 via-pink-600 to-indigo-600 px-6 py-5">
-                        <div className="flex items-center gap-3">
-                          <div className="bg-white/20 backdrop-blur-sm rounded-lg p-2 animate-pulse">
-                            <Database className="w-7 h-7 text-white" />
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="bg-white/20 backdrop-blur-sm rounded-lg p-2 animate-pulse">
+                              <Database className="w-7 h-7 text-white" />
+                            </div>
+                            <div>
+                              <h3 className="text-2xl font-bold text-white">{activeGame?.content?.title || activeModule.content?.title || `SQL Challenge`}</h3>
+                              <p className="text-purple-100 text-sm font-medium">📊 Database Skills Challenge</p>
+                            </div>
                           </div>
-                          <div>
-                            <h3 className="text-2xl font-bold text-white">{activeGame?.content?.title || activeModule.content?.title || `SQL Challenge`}</h3>
-                            <p className="text-purple-100 text-sm font-medium">📊 Database Skills Challenge</p>
-                          </div>
+                          {token && userId && (
+                            <button 
+                              onClick={fetchHintInfo}
+                              className="flex items-center gap-2 bg-gradient-to-r from-yellow-400 to-orange-500 hover:from-yellow-500 hover:to-orange-600 text-white px-4 py-2 rounded-lg font-bold transition-all duration-300 transform hover:scale-105 shadow-lg"
+                              title="Get a hint for this module"
+                            >
+                              <Sparkles className="w-5 h-5" />
+                              Get Hint
+                            </button>
+                          )}
                         </div>
                       </div>
                       
@@ -1810,12 +1870,48 @@ const TrackDetails: React.FC = () => {
                             </div>
                           </div>
                         </div>
+
+                        {/* Display SQL Questions */}
+                        {activeGame?.content?.questions && activeGame.content.questions.length > 0 ? (
+                          <div className="space-y-4 mb-6">
+                            <h4 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                              <Target className="w-5 h-5 text-purple-600" />
+                              SQL Challenges
+                            </h4>
+                            {activeGame.content.questions.map((q: any, idx: number) => (
+                              <div key={idx} className="bg-gradient-to-br from-purple-50 to-indigo-50 rounded-xl p-5 border-2 border-purple-200">
+                                <div className="flex items-start gap-3 mb-3">
+                                  <div className="bg-purple-600 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold text-sm flex-shrink-0">
+                                    {idx + 1}
+                                  </div>
+                                  <div className="flex-1">
+                                    <p className="text-gray-900 font-semibold leading-relaxed">{q.question}</p>
+                                  </div>
+                                </div>
+                                {q.answer && (
+                                  <details className="mt-3">
+                                    <summary className="cursor-pointer text-sm text-purple-700 font-semibold hover:text-purple-900 transition-colors">
+                                      💡 Show expected answer
+                                    </summary>
+                                    <div className="mt-2 bg-white rounded-lg p-3 border border-purple-200">
+                                      <code className="text-sm text-gray-800 font-mono">{q.answer}</code>
+                                    </div>
+                                  </details>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-6">
+                            <p className="text-yellow-700">No questions available for this SQL challenge.</p>
+                          </div>
+                        )}
                         
                         {/* SQL Query Editor */}
                         <div className="mb-6">
                           <label className="text-sm font-bold text-gray-700 mb-3 flex items-center gap-2">
                             <Code className="w-5 h-5 text-purple-600" />
-                            SQL Query Editor
+                            Your SQL Query
                           </label>
                           <div className="relative">
                             <textarea
@@ -1831,7 +1927,7 @@ const TrackDetails: React.FC = () => {
                           </div>
                           <div className="mt-2 flex items-start gap-2 text-sm text-purple-600">
                             <Info className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                            <p>Tip: Use proper SQL syntax. Test your query logic carefully.</p>
+                            <p>Tip: Write queries to solve the challenges above. Use proper SQL syntax.</p>
                           </div>
                         </div>
 
@@ -1846,7 +1942,8 @@ const TrackDetails: React.FC = () => {
                                 body: JSON.stringify({ 
                                   query: sqlQuery,
                                   challengeId: activeGame?.content?.challengeId || 'basic-select',
-                                  moduleId: activeModule.id 
+                                  moduleId: activeModule.id,
+                                  questions: activeGame?.content?.questions // Send questions from database
                                 })
                               });
                               const data = await res.json();
@@ -1869,29 +1966,23 @@ const TrackDetails: React.FC = () => {
                         {(token && userId && activeGame) ? (
                           <div className="mt-4">
                             <button
-                              className="w-full bg-green-50 text-green-700 px-4 py-2 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="w-full bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-md hover:shadow-lg flex items-center justify-center gap-2"
                               disabled={isActiveGameCompleted}
-                              onClick={async () => {
-                                try {
-                                  const headers: any = { 'Content-Type': 'application/json' };
-                                  if (token) headers['Authorization'] = `Bearer ${token}`;
-                                  // Pre-create progress to avoid 404
-                                  if (token) {
-                                    await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}`, {
-                                      method: 'PUT', headers,
-                                      body: JSON.stringify({ completedModules: [], completedGames: [], achievements: null })
-                                    }).catch(() => {});
-                                  }
-                                  const res = await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}/game/${activeGame.id}/complete`, { method: 'POST', headers });
-                                  if (!res.ok) return;
-                                  const data = await res.json();
-                                  const merged = mergeProgress(trackProgress, data.progress);
-                                  setTrackProgress(merged);
-                                  setProgress(calcPercent(merged, track));
-                                  await saveProgress(merged);
-                                } catch (err) {}
-                              }}
-                            >Mark game complete</button>
+                              onClick={markGameAndModuleComplete}
+                              title={isActiveGameCompleted ? "Already completed" : "Mark this game as complete"}
+                            >
+                              {isActiveGameCompleted ? (
+                                <>
+                                  <CheckCircle className="w-5 h-5" />
+                                  Completed ✓
+                                </>
+                              ) : (
+                                <>
+                                  <CheckCircle className="w-5 h-5" />
+                                  Mark Complete
+                                </>
+                              )}
+                            </button>
                           </div>
                         ) : (
                           activeGame ? (
@@ -1929,7 +2020,13 @@ const TrackDetails: React.FC = () => {
                             <Sparkles className="w-6 h-6 text-indigo-600 flex-shrink-0 mt-1" />
                             <div className="flex-1">
                               <h4 className="font-bold text-gray-900 mb-2 text-lg">Puzzle Question</h4>
-                              <p className="text-gray-700 leading-relaxed text-lg">{activeGame?.content?.question || activeGame?.content?.description || activeModule.content?.description || 'Solve this logic puzzle.'}</p>
+                              <p className="text-gray-700 leading-relaxed text-lg">{
+                                (() => {
+                                  const content = activeGame?.content || {};
+                                  console.log('🎮 Logic Game Content:', content);
+                                  return content.question || content.description || activeModule.content?.description || 'Solve this logic puzzle.';
+                                })()
+                              }</p>
                             </div>
                           </div>
                         </div>
@@ -1987,28 +2084,23 @@ const TrackDetails: React.FC = () => {
                         {(token && userId && activeGame) ? (
                           <div className="mt-4">
                             <button
-                              className="w-full bg-green-50 text-green-700 px-4 py-2 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="w-full bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-md hover:shadow-lg flex items-center justify-center gap-2"
                               disabled={isActiveGameCompleted}
-                              onClick={async () => {
-                                try {
-                                  const headers: any = { 'Content-Type': 'application/json' };
-                                  if (token) headers['Authorization'] = `Bearer ${token}`;
-                                  if (token) {
-                                    await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}`, {
-                                      method: 'PUT', headers,
-                                      body: JSON.stringify({ completedModules: [], completedGames: [], achievements: null })
-                                    }).catch(() => {});
-                                  }
-                                  const res = await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}/game/${activeGame.id}/complete`, { method: 'POST', headers });
-                                  if (!res.ok) return;
-                                  const data = await res.json();
-                                  const merged = mergeProgress(trackProgress, data.progress);
-                                  setTrackProgress(merged);
-                                  setProgress(calcPercent(merged, track));
-                                  await saveProgress(merged);
-                                } catch (err) {}
-                              }}
-                            >Mark game complete</button>
+                              onClick={markGameAndModuleComplete}
+                              title={isActiveGameCompleted ? "Already completed" : "Mark this game as complete"}
+                            >
+                              {isActiveGameCompleted ? (
+                                <>
+                                  <CheckCircle className="w-5 h-5" />
+                                  Completed ✓
+                                </>
+                              ) : (
+                                <>
+                                  <CheckCircle className="w-5 h-5" />
+                                  Mark Complete
+                                </>
+                              )}
+                            </button>
                           </div>
                         ) : (
                           activeGame ? (
@@ -2046,7 +2138,13 @@ const TrackDetails: React.FC = () => {
                             <Target className="w-6 h-6 text-pink-600 flex-shrink-0 mt-1" />
                             <div className="flex-1">
                               <h4 className="font-bold text-gray-900 mb-2 text-lg">Puzzle Description</h4>
-                              <p className="text-gray-700 leading-relaxed">{activeGame?.content?.description || activeModule.content?.description || 'Solve this puzzle challenge.'}</p>
+                              <p className="text-gray-700 leading-relaxed">{
+                                (() => {
+                                  const content = activeGame?.content || {};
+                                  console.log('🧩 Puzzle Game Content:', content);
+                                  return content.question || content.description || activeModule.content?.description || 'Solve this puzzle challenge.';
+                                })()
+                              }</p>
                             </div>
                           </div>
                         </div>
@@ -2103,28 +2201,23 @@ const TrackDetails: React.FC = () => {
                         {(token && userId && activeGame) ? (
                           <div className="mt-4">
                             <button
-                              className="w-full bg-green-50 text-green-700 px-4 py-2 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="w-full bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-md hover:shadow-lg flex items-center justify-center gap-2"
                               disabled={isActiveGameCompleted}
-                              onClick={async () => {
-                                try {
-                                  const headers: any = { 'Content-Type': 'application/json' };
-                                  if (token) headers['Authorization'] = `Bearer ${token}`;
-                                  if (token) {
-                                    await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}`, {
-                                      method: 'PUT', headers,
-                                      body: JSON.stringify({ completedModules: [], completedGames: [], achievements: null })
-                                    }).catch(() => {});
-                                  }
-                                  const res = await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}/game/${activeGame.id}/complete`, { method: 'POST', headers });
-                                  if (!res.ok) return;
-                                  const data = await res.json();
-                                  const merged = mergeProgress(trackProgress, data.progress);
-                                  setTrackProgress(merged);
-                                  setProgress(calcPercent(merged, track));
-                                  await saveProgress(merged);
-                                } catch (err) {}
-                              }}
-                            >Mark game complete</button>
+                              onClick={markGameAndModuleComplete}
+                              title={isActiveGameCompleted ? "Already completed" : "Mark this game as complete"}
+                            >
+                              {isActiveGameCompleted ? (
+                                <>
+                                  <CheckCircle className="w-5 h-5" />
+                                  Completed ✓
+                                </>
+                              ) : (
+                                <>
+                                  <CheckCircle className="w-5 h-5" />
+                                  Mark Complete
+                                </>
+                              )}
+                            </button>
                           </div>
                         ) : (
                           activeGame ? (
@@ -2220,7 +2313,8 @@ const TrackDetails: React.FC = () => {
                                 body: JSON.stringify({ 
                                   answers,
                                   challengeId: activeGame?.content?.challengeId || 'programming-basics',
-                                  moduleId: activeModule.id 
+                                  moduleId: activeModule.id,
+                                  questions: activeGame?.content?.questions // Send questions to backend for validation
                                 })
                               });
                               const data = await res.json();
@@ -2243,28 +2337,23 @@ const TrackDetails: React.FC = () => {
                         {(token && userId && activeGame) ? (
                           <div className="mt-4">
                             <button
-                              className="w-full bg-green-50 text-green-700 px-4 py-2 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="w-full bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-md hover:shadow-lg flex items-center justify-center gap-2"
                               disabled={isActiveGameCompleted}
-                              onClick={async () => {
-                                try {
-                                  const headers: any = { 'Content-Type': 'application/json' };
-                                  if (token) headers['Authorization'] = `Bearer ${token}`;
-                                  if (token) {
-                                    await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}`, {
-                                      method: 'PUT', headers,
-                                      body: JSON.stringify({ completedModules: [], completedGames: [], achievements: null })
-                                    }).catch(() => {});
-                                  }
-                                  const res = await fetch(`${API_BASE}/users/${userId}/track-progress/${track.id}/game/${activeGame.id}/complete`, { method: 'POST', headers });
-                                  if (!res.ok) return;
-                                  const data = await res.json();
-                                  const merged = mergeProgress(trackProgress, data.progress);
-                                  setTrackProgress(merged);
-                                  setProgress(calcPercent(merged, track));
-                                  await saveProgress(merged);
-                                } catch (err) {}
-                              }}
-                            >Mark game complete</button>
+                              onClick={markGameAndModuleComplete}
+                              title={isActiveGameCompleted ? "Already completed" : "Mark this game as complete"}
+                            >
+                              {isActiveGameCompleted ? (
+                                <>
+                                  <CheckCircle className="w-5 h-5" />
+                                  Completed ✓
+                                </>
+                              ) : (
+                                <>
+                                  <CheckCircle className="w-5 h-5" />
+                                  Mark Complete
+                                </>
+                              )}
+                            </button>
                           </div>
                         ) : (
                           activeGame ? (
@@ -2437,6 +2526,116 @@ const TrackDetails: React.FC = () => {
                 Reset
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Hint Purchase Modal */}
+      {showHintModal && hintData && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 animate-fadeIn">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full mx-4 p-6 animate-scaleIn">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="bg-gradient-to-br from-yellow-400 to-orange-500 rounded-full p-3">
+                <Sparkles className="w-6 h-6 text-white" />
+              </div>
+              <h3 className="text-xl font-bold text-gray-900">💡 Get a Hint</h3>
+            </div>
+            
+            {!(activeModule && purchasedHints[activeModule.id]) ? (
+              <>
+                <div className="bg-gradient-to-r from-blue-50 to-purple-50 rounded-xl p-4 mb-4 border border-blue-200">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-gray-700 font-semibold">Module:</span>
+                    <span className="text-gray-900 font-bold">{activeModule?.content?.title || 'Current Module'}</span>
+                  </div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-gray-700 font-semibold">Hint Cost:</span>
+                    <span className={`font-bold ${hintData.hintCost === 0 ? 'text-green-600' : 'text-orange-600'} flex items-center gap-1`}>
+                      {hintData.hintCost === 0 ? (
+                        <>🎁 FREE</>
+                      ) : (
+                        <>
+                          <Coins className="w-5 h-5" />
+                          {hintData.hintCost} Coins
+                        </>
+                      )}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-700 font-semibold">Your Balance:</span>
+                    <span className="text-gray-900 font-bold flex items-center gap-1">
+                      <Coins className="w-5 h-5 text-yellow-600" />
+                      {coins} Coins
+                    </span>
+                  </div>
+                </div>
+
+                {hintData.hintCost > coins && hintData.hintCost > 0 && (
+                  <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4 flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-red-800 font-semibold">Insufficient coins!</p>
+                      <p className="text-red-700 text-sm mt-1">
+                        You need {hintData.hintCost - coins} more coins. Complete more modules to earn coins!
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                <p className="text-gray-600 mb-6">
+                  {hintData.hintCost === 0 
+                    ? "This is a beginner module, so the hint is completely free! Click below to reveal it."
+                    : `This hint will cost ${hintData.hintCost} coins. Your remaining balance will be ${coins - hintData.hintCost} coins.`
+                  }
+                </p>
+
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => setShowHintModal(false)}
+                    className="flex-1 px-4 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold rounded-xl transition-colors duration-300"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={purchaseHint}
+                    disabled={hintData.hintCost > coins && hintData.hintCost > 0}
+                    className="flex-1 px-4 py-3 bg-gradient-to-r from-yellow-400 to-orange-500 hover:from-yellow-500 hover:to-orange-600 text-white font-semibold rounded-xl transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  >
+                    <Sparkles className="w-5 h-5" />
+                    {hintData.hintCost === 0 ? 'Get Free Hint' : 'Purchase Hint'}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-xl p-4 mb-4 border-2 border-green-200">
+                  <div className="flex items-center gap-2 mb-3">
+                    <CheckCircle className="w-6 h-6 text-green-600" />
+                    <span className="text-green-800 font-bold text-lg">Hint Unlocked!</span>
+                  </div>
+                  <div className="bg-white rounded-lg p-4 border border-green-200">
+                    <p className="text-gray-800 leading-relaxed whitespace-pre-wrap">{activeModule && purchasedHints[activeModule.id]}</p>
+                  </div>
+                </div>
+
+                <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-700 font-semibold">New Balance:</span>
+                    <span className="text-gray-900 font-bold flex items-center gap-1">
+                      <Coins className="w-5 h-5 text-yellow-600" />
+                      {coins} Coins
+                    </span>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setShowHintModal(false)}
+                  className="w-full px-4 py-3 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-semibold rounded-xl transition-all duration-300"
+                >
+                  Close
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}

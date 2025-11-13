@@ -22,21 +22,32 @@ async function main() {
         email: 'itprof@example.com',
         password: hashedPassword,
         role: 'IT Professional',
-        bio: 'Experienced IT professional ready to create learning tracks'
+        bio: 'Experienced IT professional ready to create learning tracks',
+        emailVerified: true
       },
       {
         name: 'John Student',
         email: 'student@example.com',
         password: hashedPassword,
         role: 'student',
-        bio: 'Eager to learn IT skills'
+        bio: 'Eager to learn IT skills',
+        emailVerified: true
       },
       {
-        name: 'Career Switcher',
-        email: 'switcher@example.com',
+        name: 'Paul Student',
+        email: 'paulrainiel01@gmail.com',
         password: hashedPassword,
-        role: 'career_switcher',
-        bio: 'Switching careers into IT field'
+        role: 'student',
+        bio: 'Student exploring IT career paths',
+        emailVerified: true
+      },
+      {
+        name: 'Paul Professor',
+        email: 'paulrainiel02@gmail.com',
+        password: hashedPassword,
+        role: 'IT Professional',
+        bio: 'IT educator passionate about teaching technology',
+        emailVerified: true
       }
     ]
   });
@@ -45,7 +56,8 @@ async function main() {
   console.log('📧 User credentials:');
   console.log('   IT Professional: itprof@example.com / password123');
   console.log('   Student: student@example.com / password123');
-  console.log('   Career Switcher: switcher@example.com / password123');
+  console.log('   Paul Student: paulrainiel01@gmail.com / password123');
+  console.log('   Paul Professor: paulrainiel02@gmail.com / password123');
 
   console.log('📥 Inserting questions...');
   await prisma.question.createMany({

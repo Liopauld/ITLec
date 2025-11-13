@@ -1,6 +1,6 @@
 import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
-import { AlertCircle, CheckCircle, TrendingUp, TrendingDown, Target, Sparkles, RefreshCw, LayoutDashboard, Award, Zap, Brain, ArrowRight, Check } from 'lucide-react';
+import { AlertCircle, CheckCircle, TrendingUp, TrendingDown, Target, Sparkles, RefreshCw, LayoutDashboard, Award, Brain, ArrowRight } from 'lucide-react';
 
 import { Bar } from 'react-chartjs-2';
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend } from 'chart.js';
@@ -10,9 +10,9 @@ export default function Results() {
   const router = useRouter();
   const [scoreVector, setScoreVector] = useState<Record<string, number>>({});
   const [recommendedTracks, setRecommendedTracks] = useState<any[]>([]);
-  const [selectedCourses, setSelectedCourses] = useState<string[]>([]);
   const [aiFeedback, setAiFeedback] = useState<string>('');
   const [aiCareerPath, setAiCareerPath] = useState<string>('');
+  const [careerConfidence, setCareerConfidence] = useState<number>(0);
   const [nextSteps, setNextSteps] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [tracksLoading, setTracksLoading] = useState(true);
@@ -22,7 +22,7 @@ export default function Results() {
     const userStr = localStorage.getItem('user');
     if (userStr) {
       const user = JSON.parse(userStr);
-      if (user.role !== 'student' && user.role !== 'career_switcher') {
+      if (user.role !== 'student') {
         router.replace('/dashboard');
         return;
       }
@@ -90,6 +90,7 @@ export default function Results() {
           console.log('AI feedback received:', data.cached ? 'from cache' : 'fresh from API');
           setAiFeedback(data.feedback || '');
           setAiCareerPath(data.careerPath || '');
+          setCareerConfidence(data.careerConfidence || 0);
           
           if (data.nextSteps) {
             const steps = typeof data.nextSteps === 'string' 
@@ -112,9 +113,16 @@ export default function Results() {
             .filter(([_, score]) => score >= 70)
             .map(([tag]) => tag);
           
-          const weaknesses = Object.entries(scoreVector)
+          const weaknessesBelow50 = Object.entries(scoreVector)
             .filter(([_, score]) => score < 50)
             .map(([tag]) => tag);
+          
+          const weaknesses = weaknessesBelow50.length > 0 
+            ? weaknessesBelow50 
+            : Object.entries(scoreVector)
+                .sort(([, a], [, b]) => a - b)
+                .slice(0, Math.min(3, Object.keys(scoreVector).length))
+                .map(([tag]) => tag);
           
           // Generate fallback feedback based on scores
           const avgScore = Object.values(scoreVector).reduce((a, b) => a + b, 0) / Object.keys(scoreVector).length;
@@ -123,15 +131,13 @@ export default function Results() {
             .slice(0, 2)
             .map(([skill]) => skill.replace(/_/g, ' '));
           
-          const improvementAreas = Object.entries(scoreVector)
-            .filter(([, score]) => score < 50)
-            .map(([skill]) => skill.replace(/_/g, ' '));
+          const improvementAreas = weaknesses.map(skill => skill.replace(/_/g, ' '));
 
           let feedback = '';
           let careerPath = '';
           
           if (avgScore >= 70) {
-            feedback = `Excellent performance! You've demonstrated strong capabilities across multiple areas, particularly in ${topSkills.join(' and ')}. Your assessment results show you're well-prepared for advanced IT career paths.`;
+            feedback = `Excellent performance! You've demonstrated strong capabilities across multiple areas, particularly in ${topSkills.join(' and ')}. Your assessment results show you're well-prepared for advanced IT career paths. ${improvementAreas.length > 0 ? `To further excel, consider strengthening ${improvementAreas.slice(0, 2).join(' and ')}.` : ''}`;
             careerPath = `Recommended career: Senior ${topSkills[0]} Specialist`;
           } else if (avgScore >= 50) {
             feedback = `Good foundation! You show promise in ${topSkills.join(' and ')}, which are valuable skills in the IT industry. ${improvementAreas.length > 0 ? `Focus on strengthening ${improvementAreas.join(' and ')}.` : 'Continue building on your strengths.'}`;
@@ -167,9 +173,17 @@ export default function Results() {
     .filter(([_, score]) => score >= 70)
     .map(([tag]) => tag);
   
-  const weaknesses = Object.entries(scoreVector)
+  // Always show areas to improve: either scores below 50, or lowest 2-3 scores
+  const weaknessesBelow50 = Object.entries(scoreVector)
     .filter(([_, score]) => score < 50)
     .map(([tag]) => tag);
+  
+  const weaknesses = weaknessesBelow50.length > 0 
+    ? weaknessesBelow50 
+    : Object.entries(scoreVector)
+        .sort(([, a], [, b]) => a - b) // Sort by score ascending (lowest first)
+        .slice(0, Math.min(3, Object.keys(scoreVector).length)) // Take lowest 2-3 scores
+        .map(([tag]) => tag);
 
   const chartData = {
     labels: Object.keys(scoreVector),
@@ -276,43 +290,22 @@ export default function Results() {
                   <p className="text-gray-500">Loading recommended career tracks...</p>
                 </div>
               ) : recommendedTracks.length > 0 ? (
-                <div className="space-y-3 mb-6">
+                <div className="space-y-3">
                   {recommendedTracks.map((track, idx) => (
                     <div
                       key={track.id}
                       onClick={() => {
-                        setSelectedCourses(prev =>
-                          prev.includes(track.title)
-                            ? prev.filter(c => c !== track.title)
-                            : [...prev, track.title]
-                        );
+                        router.push(`/track/${track.id}`);
                       }}
-                      className={`group flex items-center gap-4 p-4 rounded-xl border-2 cursor-pointer transition-all duration-300 ${
-                        selectedCourses.includes(track.title)
-                          ? 'border-green-500 bg-gradient-to-r from-green-50 to-emerald-50 shadow-md'
-                          : 'border-gray-200 hover:border-green-300 hover:bg-gray-50'
-                      }`}
+                      className="group flex items-center gap-4 p-4 rounded-xl border-2 border-gray-200 hover:border-green-300 hover:bg-gradient-to-r hover:from-green-50 hover:to-emerald-50 cursor-pointer transition-all duration-300 hover:shadow-md"
                     >
-                      <div className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all duration-300 ${
-                        selectedCourses.includes(track.title)
-                          ? 'border-green-500 bg-green-500'
-                          : 'border-gray-300 group-hover:border-green-400'
-                      }`}>
-                        {selectedCourses.includes(track.title) && (
-                          <Check className="w-4 h-4 text-white" />
-                        )}
-                      </div>
                       <div className="flex-1">
                         <h3 className="font-semibold text-gray-900 group-hover:text-green-600 transition-colors duration-300">
                           {track.title}
                         </h3>
                         <p className="text-gray-600 text-sm">{track.description}</p>
                       </div>
-                      <ArrowRight className={`w-5 h-5 transition-all duration-300 ${
-                        selectedCourses.includes(track.title)
-                          ? 'text-green-600 translate-x-1'
-                          : 'text-gray-400 group-hover:text-green-500 group-hover:translate-x-1'
-                      }`} />
+                      <ArrowRight className="w-5 h-5 text-gray-400 group-hover:text-green-500 group-hover:translate-x-1 transition-all duration-300" />
                     </div>
                   ))}
                 </div>
@@ -320,34 +313,6 @@ export default function Results() {
                 <div className="text-center py-8 bg-gray-50 rounded-xl">
                   <Target className="w-12 h-12 text-gray-300 mx-auto mb-3" />
                   <p className="text-gray-500">No tracks recommended yet. Complete the assessment to get personalized recommendations!</p>
-                </div>
-              )}
-              {selectedCourses.length > 0 && (
-                <div className="bg-gradient-to-r from-green-50 to-emerald-50 border-2 border-green-200 rounded-xl p-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                  <div className="flex items-center gap-2 mb-4">
-                    <CheckCircle className="w-5 h-5 text-green-600" />
-                    <h4 className="text-green-800 font-semibold">
-                      {selectedCourses.length} {selectedCourses.length === 1 ? 'Track' : 'Tracks'} Selected
-                    </h4>
-                  </div>
-                  <ul className="space-y-2 mb-4">
-                    {selectedCourses.map((track, idx) => (
-                      <li key={idx} className="flex items-center gap-2 text-green-700">
-                        <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                        {track}
-                      </li>
-                    ))}
-                  </ul>
-                  <button
-                    onClick={(e) => {
-                      e.preventDefault();
-                      alert('Tracks selected! You can now proceed to your dashboard.');
-                    }}
-                    className="w-full bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white px-6 py-3 rounded-xl font-semibold transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 flex items-center justify-center gap-2"
-                  >
-                    <Zap className="w-5 h-5" />
-                    Start Learning Journey
-                  </button>
                 </div>
               )}
             </div>
@@ -469,14 +434,41 @@ export default function Results() {
                   </div>
                 ) : (
                   <>
-                    {/* Career Path Recommendation */}
+                    {/* Career Path Recommendations */}
                     {aiCareerPath && (
                       <div className="bg-gradient-to-r from-purple-50 to-indigo-50 border-2 border-purple-200 rounded-xl p-5">
                         <div className="flex items-start gap-3">
                           <Target className="w-6 h-6 text-purple-600 flex-shrink-0 mt-1" />
-                          <div>
-                            <h3 className="text-purple-900 font-bold text-lg mb-2">🎯 Your Career Path</h3>
-                            <p className="text-purple-800 font-medium">{aiCareerPath}</p>
+                          <div className="flex-1">
+                            <div className="flex items-center justify-between mb-3">
+                              <h3 className="text-purple-900 font-bold text-lg">🎯 Suggested Career Paths</h3>
+                              {careerConfidence > 0 && (
+                                <span className={`px-3 py-1 rounded-full text-sm font-semibold ${
+                                  careerConfidence >= 80 ? 'bg-green-100 text-green-800' :
+                                  careerConfidence >= 65 ? 'bg-blue-100 text-blue-800' :
+                                  careerConfidence >= 50 ? 'bg-yellow-100 text-yellow-800' :
+                                  'bg-orange-100 text-orange-800'
+                                }`}>
+                                  {careerConfidence}% Match
+                                </span>
+                              )}
+                            </div>
+                            <div className="space-y-2 mb-3">
+                              {aiCareerPath.split('\n').filter(path => path.trim()).map((path, idx) => (
+                                <div key={idx} className="flex items-start gap-2">
+                                  <div className="w-2 h-2 bg-purple-500 rounded-full mt-2 flex-shrink-0"></div>
+                                  <span className="text-purple-800 font-medium">{path.replace(/^\d+\.\s*/, '')}</span>
+                                </div>
+                              ))}
+                            </div>
+                            {careerConfidence > 0 && (
+                              <p className="text-purple-600 text-sm mt-3 pt-3 border-t border-purple-200">
+                                {careerConfidence >= 80 ? '🌟 Excellent match based on your skills' :
+                                 careerConfidence >= 65 ? '✨ Great alignment with your strengths' :
+                                 careerConfidence >= 50 ? '💫 Good fit with room to grow' :
+                                 '🎯 Foundation paths to build your skills'}
+                              </p>
+                            )}
                           </div>
                         </div>
                       </div>

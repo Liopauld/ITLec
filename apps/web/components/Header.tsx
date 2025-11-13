@@ -9,7 +9,7 @@ type UserWithProfilePicture = {
   role?: string;
   [key: string]: any;
 };
-import { LogOut, UserCircle2, LayoutDashboard, Users, Target, Menu, X, Sparkles, Bell, Settings, ChevronDown, Home, Search, Calendar } from 'lucide-react';
+import { LogOut, UserCircle2, LayoutDashboard, Users, Target, Menu, X, Sparkles, Bell, ChevronDown, Home, Calendar, Award, Video } from 'lucide-react';
 
 export default function Header() {
   const router = useRouter();
@@ -18,7 +18,11 @@ export default function Header() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
-  const [notificationCount] = useState(3); // Mock notification count
+  const [notificationCount, setNotificationCount] = useState(0);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [notifications, setNotifications] = useState<any[]>([]);
+
+  const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:4000';
 
   useEffect(() => {
     const handleScroll = () => {
@@ -28,11 +32,52 @@ export default function Header() {
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
+  // Fetch notifications for IT Professionals and Students
+  useEffect(() => {
+    const fetchNotifications = async () => {
+      const token = localStorage.getItem('token');
+      if (!token || !user) return;
+
+      try {
+        if (user.role === 'IT Professional') {
+          // Fetch session requests for IT Professionals
+          const response = await fetch(`${API_BASE}/session-requests/mentor`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          const data = await response.json();
+          const pendingRequests = data.requests?.filter((r: any) => r.status === 'pending') || [];
+          setNotifications(pendingRequests);
+          setNotificationCount(pendingRequests.length);
+        } else if (user.role === 'student' || user.role === 'career_switcher') {
+          // Fetch notifications for students
+          const response = await fetch(`${API_BASE}/notifications?unreadOnly=true`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          const data = await response.json();
+          setNotifications(data.notifications || []);
+          setNotificationCount(data.notifications?.length || 0);
+        }
+      } catch (err) {
+        console.error('Error fetching notifications:', err);
+      }
+    };
+
+    if (user) {
+      fetchNotifications();
+      // Refresh notifications every 30 seconds
+      const interval = setInterval(fetchNotifications, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [user, API_BASE]);
+
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       if (!target.closest('.profile-dropdown')) {
         setProfileDropdownOpen(false);
+      }
+      if (!target.closest('.notifications-dropdown')) {
+        setShowNotifications(false);
       }
     };
 
@@ -117,7 +162,7 @@ export default function Header() {
                   <span className="font-semibold">Tracks</span>
                 </Link>
 
-                {(user.role === 'student' || user.role === 'career_switcher' || user.role === 'professional' || user.role === 'IT Professional') && (
+                {(user.role === 'student' || user.role === 'professional' || user.role === 'IT Professional') && (
                   <Link 
                     href="/dashboard"
                     className={`group flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium transition-all duration-300 ${
@@ -154,8 +199,20 @@ export default function Header() {
                   <Calendar className="w-4 h-4 group-hover:scale-110 transition-transform duration-300" />
                   <span className="font-semibold">Events</span>
                 </Link>
+
+                <Link 
+                  href="/sessions"
+                  className={`group flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium transition-all duration-300 ${
+                    isActive('/sessions')
+                      ? 'bg-gradient-to-r from-teal-500 to-cyan-500 text-white shadow-lg shadow-teal-200'
+                      : 'text-gray-700 hover:bg-gradient-to-r hover:from-teal-50 hover:to-cyan-50 hover:text-teal-600'
+                  }`}
+                >
+                  <Video className="w-4 h-4 group-hover:scale-110 transition-transform duration-300" />
+                  <span className="font-semibold">Sessions & Calendar</span>
+                </Link>
                 
-                {(user.role === 'student' || user.role === 'career_switcher') && (
+                {user.role === 'student' && (
                   <a
                     href="#"
                     onClick={handleAssessmentClick}
@@ -202,20 +259,132 @@ export default function Header() {
           {/* Desktop User Actions - Enhanced */}
           {user && (
             <div className="hidden lg:flex items-center gap-3">
-              {/* Search Button */}
-              <button className="p-2.5 rounded-xl hover:bg-gray-100 transition-all duration-300 group">
-                <Search className="w-5 h-5 text-gray-600 group-hover:text-blue-600 group-hover:scale-110 transition-all duration-300" />
-              </button>
-
               {/* Notifications with badge */}
-              <button className="relative p-2.5 rounded-xl hover:bg-gray-100 transition-all duration-300 group">
-                <Bell className="w-5 h-5 text-gray-600 group-hover:text-blue-600 group-hover:rotate-12 transition-all duration-300" />
-                {notificationCount > 0 && (
-                  <span className="absolute top-1 right-1 w-5 h-5 bg-gradient-to-r from-red-500 to-pink-500 rounded-full text-white text-xs font-bold flex items-center justify-center animate-bounce shadow-lg">
-                    {notificationCount}
-                  </span>
+              <div className="relative notifications-dropdown">
+                <button 
+                  onClick={() => setShowNotifications(!showNotifications)}
+                  className="relative p-2.5 rounded-xl hover:bg-gray-100 transition-all duration-300 group"
+                >
+                  <Bell className="w-5 h-5 text-gray-600 group-hover:text-blue-600 group-hover:rotate-12 transition-all duration-300" />
+                  {notificationCount > 0 && (
+                    <span className="absolute top-1 right-1 w-5 h-5 bg-gradient-to-r from-red-500 to-pink-500 rounded-full text-white text-xs font-bold flex items-center justify-center animate-bounce shadow-lg">
+                      {notificationCount}
+                    </span>
+                  )}
+                </button>
+
+                {/* Notifications Dropdown */}
+                {showNotifications && (
+                  <div className="absolute right-0 mt-3 w-80 bg-white rounded-2xl shadow-2xl border border-gray-200 py-3 z-50">
+                    <div className="px-5 py-3 border-b border-gray-100">
+                      <h3 className="text-lg font-bold text-gray-900">Notifications</h3>
+                      {notificationCount > 0 && (
+                        <p className="text-sm text-gray-600">
+                          {notificationCount} new {user?.role === 'IT Professional' ? 'session request' : 'notification'}{notificationCount > 1 ? 's' : ''}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="max-h-96 overflow-y-auto">
+                      {notifications.length === 0 ? (
+                        <div className="p-8 text-center">
+                          <Bell className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+                          <p className="text-gray-500">No new notifications</p>
+                        </div>
+                      ) : (
+                        <div className="divide-y divide-gray-100">
+                          {notifications.map((notif: any) => {
+                            // Handle IT Professional notifications (session requests)
+                            if (user?.role === 'IT Professional') {
+                              return (
+                                <div
+                                  key={notif.id}
+                                  onClick={() => {
+                                    setShowNotifications(false);
+                                    router.push('/users');
+                                  }}
+                                  className="px-5 py-4 hover:bg-blue-50 transition-colors cursor-pointer"
+                                >
+                                  <div className="flex items-start gap-3">
+                                    <div className="w-10 h-10 rounded-full bg-gradient-to-r from-blue-500 to-purple-500 flex items-center justify-center text-white font-bold flex-shrink-0">
+                                      {notif.student?.name?.charAt(0) || 'S'}
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <p className="text-sm font-semibold text-gray-900">
+                                        {notif.student?.name || 'A student'}
+                                      </p>
+                                      <p className="text-sm text-gray-600 line-clamp-2">
+                                        {notif.message || 'Requested a mentorship session'}
+                                      </p>
+                                      <p className="text-xs text-gray-500 mt-1">
+                                        {new Date(notif.createdAt).toLocaleDateString()}
+                                      </p>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            }
+                            
+                            // Handle Student notifications (session created, etc.)
+                            return (
+                              <div
+                                key={notif.id}
+                                onClick={async () => {
+                                  // Mark as read
+                                  const token = localStorage.getItem('token');
+                                  try {
+                                    await fetch(`${API_BASE}/notifications/${notif.id}`, {
+                                      method: 'PUT',
+                                      headers: { Authorization: `Bearer ${token}` }
+                                    });
+                                  } catch (err) {
+                                    console.error('Error marking notification as read:', err);
+                                  }
+                                  
+                                  setShowNotifications(false);
+                                  router.push('/sessions');
+                                }}
+                                className="px-5 py-4 hover:bg-blue-50 transition-colors cursor-pointer"
+                              >
+                                <div className="flex items-start gap-3">
+                                  <div className="w-10 h-10 rounded-full bg-gradient-to-r from-green-500 to-blue-500 flex items-center justify-center text-white flex-shrink-0">
+                                    <Calendar className="w-5 h-5" />
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-sm font-semibold text-gray-900">
+                                      {notif.title}
+                                    </p>
+                                    <p className="text-sm text-gray-600 line-clamp-2">
+                                      {notif.message}
+                                    </p>
+                                    <p className="text-xs text-gray-500 mt-1">
+                                      {new Date(notif.createdAt).toLocaleDateString()}
+                                    </p>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {notifications.length > 0 && (
+                      <div className="px-5 py-3 border-t border-gray-100">
+                        <button
+                          onClick={() => {
+                            setShowNotifications(false);
+                            router.push('/users');
+                          }}
+                          className="w-full text-center text-sm font-semibold text-blue-600 hover:text-blue-700 transition-colors"
+                        >
+                          View all in Students page
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 )}
-              </button>
+              </div>
 
               {/* Enhanced Profile Dropdown */}
               <div className="relative profile-dropdown">
@@ -304,21 +473,22 @@ export default function Header() {
                         </div>
                       </Link>
 
-                      <Link
-                        href="/settings"
-                        onClick={() => setProfileDropdownOpen(false)}
-                        className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-700 hover:bg-gradient-to-r hover:from-blue-50 hover:to-purple-50 transition-all duration-300 group"
-                      >
-                        <div className="p-2 bg-gray-100 rounded-lg group-hover:bg-gray-200 transition-colors duration-300">
-                          <Settings className="w-4 h-4 text-gray-600" />
-                        </div>
-                        <div className="flex-1">
-                          <span className="text-sm font-semibold">Settings</span>
-                          <p className="text-xs text-gray-500">Preferences & privacy</p>
-                        </div>
-                      </Link>
+                      {user.role === 'student' && (
+                        <Link
+                          href="/my-certificates"
+                          onClick={() => setProfileDropdownOpen(false)}
+                          className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-700 hover:bg-gradient-to-r hover:from-yellow-50 hover:to-orange-50 transition-all duration-300 group"
+                        >
+                          <div className="p-2 bg-yellow-100 rounded-lg group-hover:bg-yellow-200 transition-colors duration-300">
+                            <Award className="w-4 h-4 text-yellow-600" />
+                          </div>
+                          <div className="flex-1">
+                            <span className="text-sm font-semibold">My Certificates</span>
+                            <p className="text-xs text-gray-500">View earned certificates</p>
+                          </div>
+                        </Link>
+                      )}
                     </div>
-
                     {/* Logout with enhanced styling */}
                     <div className="border-t border-gray-100 mt-2 pt-2 px-2">
                       <button
@@ -382,7 +552,20 @@ export default function Header() {
                     <p className="text-base font-bold text-gray-900 truncate">{user.name}</p>
                     <p className="text-sm text-gray-600 capitalize truncate font-medium">{user.role}</p>
                   </div>
-                  <button className="relative p-2.5 rounded-xl bg-white/50 hover:bg-white transition-colors shadow-sm">
+                  <button 
+                    onClick={() => {
+                      if (notificationCount > 0) {
+                        setMobileMenuOpen(false);
+                        // Navigate based on user role
+                        if (user.role === 'IT Professional') {
+                          router.push('/users');
+                        } else {
+                          router.push('/sessions');
+                        }
+                      }
+                    }}
+                    className="relative p-2.5 rounded-xl bg-white/50 hover:bg-white transition-colors shadow-sm"
+                  >
                     <Bell className="w-5 h-5 text-gray-600" />
                     {notificationCount > 0 && (
                       <span className="absolute top-1 right-1 w-4 h-4 bg-red-500 rounded-full text-white text-xs font-bold flex items-center justify-center">
@@ -401,12 +584,12 @@ export default function Header() {
                     Profile
                   </Link>
                   <Link
-                    href="/settings"
+                    href="/dashboard"
                     onClick={() => setMobileMenuOpen(false)}
                     className="flex items-center justify-center gap-2 bg-white px-4 py-3 rounded-xl text-sm font-bold text-gray-700 hover:text-blue-600 transition-all duration-300 shadow-sm hover:shadow-md"
                   >
-                    <Settings className="w-4 h-4" />
-                    Settings
+                    <LayoutDashboard className="w-4 h-4" />
+                    Dashboard
                   </Link>
                 </div>
               </div>
@@ -425,7 +608,7 @@ export default function Header() {
                 <span>Home</span>
               </Link>
 
-              {(user.role === 'student' || user.role === 'career_switcher' || user.role === 'professional' || user.role === 'IT Professional') && (
+              {(user.role === 'student' || user.role === 'professional' || user.role === 'IT Professional') && (
                 <Link 
                   href="/dashboard"
                   onClick={() => setMobileMenuOpen(false)}
@@ -466,7 +649,20 @@ export default function Header() {
                 <span>Events</span>
               </Link>
 
-              {(user.role === 'student' || user.role === 'career_switcher') && (
+              <Link 
+                href="/sessions"
+                onClick={() => setMobileMenuOpen(false)}
+                className={`flex items-center gap-3 px-5 py-3.5 rounded-xl font-semibold transition-all duration-300 ${
+                  isActive('/sessions')
+                    ? 'bg-gradient-to-r from-teal-500 to-cyan-500 text-white shadow-lg'
+                    : 'text-gray-700 hover:bg-gradient-to-r hover:from-teal-50 hover:to-cyan-50'
+                }`}
+              >
+                <Video className="w-5 h-5" />
+                <span>Sessions & Calendar</span>
+              </Link>
+
+              {user.role === 'student' && (
                 <a
                   href="#"
                   onClick={(e) => {
@@ -482,6 +678,21 @@ export default function Header() {
                   <Target className="w-5 h-5" />
                   <span>Assessment</span>
                 </a>
+              )}
+
+              {user.role === 'student' && (
+                <Link 
+                  href="/my-certificates"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className={`flex items-center gap-3 px-5 py-3.5 rounded-xl font-semibold transition-all duration-300 ${
+                    isActive('/my-certificates')
+                      ? 'bg-gradient-to-r from-yellow-500 to-orange-500 text-white shadow-lg'
+                      : 'text-gray-700 hover:bg-gradient-to-r hover:from-yellow-50 hover:to-orange-50'
+                  }`}
+                >
+                  <Award className="w-5 h-5" />
+                  <span>My Certificates</span>
+                </Link>
               )}
 
               {user.role === 'IT Professional' && (
